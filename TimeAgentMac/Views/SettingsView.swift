@@ -75,94 +75,163 @@ struct SettingsView: View {
             }
             Text("Token: TargetProcess → My Profile → Access Tokens. Stored in the Keychain.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section {
+                HStack { Text("Version").foregroundStyle(.secondary); Spacer(); Text(AppInfo.version).foregroundStyle(.secondary) }
+            }
         }
         .formStyle(.grouped)
     }
 
     private var meetings: some View {
-        Form {
-            Section("Task ids") {
-                TextField("Daily task id", value: $store.settings.dailyTaskId, format: .number)
-                TextField("Meetings task id", value: $store.settings.meetingsTaskId, format: .number)
-            }
-            Section("Rounding") {
-                TextField("Minimum minutes", value: $store.settings.meetingMinMinutes, format: .number)
-                TextField("Step minutes", value: $store.settings.meetingStepMinutes, format: .number)
-                Text("Rounds up to the minimum, then in step increments.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Dynamic meeting shortcuts") {
-                if store.settings.dynamicMeetings.isEmpty {
-                    Text("No shortcuts yet.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    columnHeader(["Name": nil, "Task id": 88])
-                    ForEach($store.settings.dynamicMeetings) { $m in
-                        HStack(spacing: 10) {
-                            TextField("e.g. Standup", text: $m.name).textFieldStyle(.roundedBorder)
-                            TextField("0", value: $m.taskId, format: .number)
-                                .textFieldStyle(.roundedBorder).frame(width: 88).multilineTextAlignment(.trailing)
-                            removeButton { store.settings.dynamicMeetings.removeAll { $0.id == m.id } }
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                groupCard("Task ids") {
+                    labeledField("Daily task id") {
+                        TextField("0", value: $store.settings.dailyTaskId, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 120)
+                    }
+                    labeledField("Meetings task id") {
+                        TextField("0", value: $store.settings.meetingsTaskId, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 120)
                     }
                 }
-                Button { store.settings.dynamicMeetings.append(.init(id: UUID().uuidString, name: "", taskId: 0, description: "")) }
-                    label: { Label("Add meeting", systemImage: "plus.circle.fill") }.buttonStyle(.borderless)
+                groupCard("Rounding") {
+                    labeledField("Minimum minutes") {
+                        TextField("0", value: $store.settings.meetingMinMinutes, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 120)
+                    }
+                    labeledField("Step minutes") {
+                        TextField("0", value: $store.settings.meetingStepMinutes, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 120)
+                    }
+                    Text("Rounds up to the minimum, then in step increments.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                groupCard("Dynamic meeting shortcuts") {
+                    if store.settings.dynamicMeetings.isEmpty {
+                        Text("No shortcuts yet.").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        columnHeaders([("Name", nil), ("Task id", 90)])
+                        Divider()
+                        ForEach($store.settings.dynamicMeetings) { $m in
+                            entryRow(onRemove: { store.settings.dynamicMeetings.removeAll { $0.id == m.id } }) {
+                                TextField("Standup", text: $m.name)
+                                    .textFieldStyle(.roundedBorder).frame(maxWidth: .infinity)
+                                TextField("0", value: $m.taskId, format: .number)
+                                    .textFieldStyle(.roundedBorder).frame(width: 90).multilineTextAlignment(.trailing)
+                            }
+                        }
+                    }
+                    Button { store.settings.dynamicMeetings.append(.init(id: UUID().uuidString, name: "", taskId: 0, description: "")) }
+                        label: { Label("Add meeting", systemImage: "plus.circle.fill").frame(maxWidth: .infinity) }
+                        .buttonStyle(.bordered).controlSize(.large)
+                }
+                saveButton { store.settings.save() }
+                Spacer(minLength: 0)
             }
-            saveButton { store.settings.save() }
+            .padding(20)
         }
-        .formStyle(.grouped)
+    }
+
+    /// A titled bordered card grouping related controls (plain-layout analogue
+    /// of a Form Section).
+    private func groupCard<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// A "label … field" row with the label leading and field trailing.
+    private func labeledField<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack { Text(title); Spacer(); content() }
     }
 
     private var recurring: some View {
-        Form {
-            Section {
-                if store.settings.recurring.isEmpty {
-                    Text("No recurring entries yet. Add one to auto-log it each working day.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    columnHeader(["Label": nil, "Task id": 88, "Hours": 64])
-                    ForEach($store.settings.recurring) { $r in
-                        HStack(spacing: 10) {
-                            TextField("e.g. Daily standup", text: $r.label).textFieldStyle(.roundedBorder)
-                            TextField("0", value: $r.taskId, format: .number)
-                                .textFieldStyle(.roundedBorder).frame(width: 88).multilineTextAlignment(.trailing)
-                            TextField("0", value: $r.hours, format: .number)
-                                .textFieldStyle(.roundedBorder).frame(width: 64).multilineTextAlignment(.trailing)
-                            removeButton { store.settings.recurring.removeAll { $0.id == r.id } }
-                        }
-                    }
+        editableList(
+            title: "Recurring entries",
+            footer: "Auto-logged once per working day on launch, skipping weekly days off and holidays.",
+            empty: "No recurring entries yet. Add one to auto-log it each working day.",
+            isEmpty: store.settings.recurring.isEmpty,
+            columns: columnHeaders([("Label", nil), ("Task id", 90), ("Hours", 64)]),
+            add: { store.settings.recurring.append(.init(id: UUID().uuidString, label: "", taskId: 0, hours: 1)) },
+            addTitle: "Add recurring"
+        ) {
+            ForEach($store.settings.recurring) { $r in
+                entryRow(onRemove: { store.settings.recurring.removeAll { $0.id == r.id } }) {
+                    TextField("Daily standup", text: $r.label)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: .infinity)
+                    TextField("0", value: $r.taskId, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 90).multilineTextAlignment(.trailing)
+                    TextField("0", value: $r.hours, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 64).multilineTextAlignment(.trailing)
                 }
-                Button { store.settings.recurring.append(.init(id: UUID().uuidString, label: "", taskId: 0, hours: 1)) }
-                    label: { Label("Add recurring", systemImage: "plus.circle.fill") }.buttonStyle(.borderless)
-            } header: { Text("Recurring entries") } footer: {
-                Text("Auto-logged once per working day on launch, skipping weekly days off and holidays.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            saveButton { store.settings.save() }
         }
-        .formStyle(.grouped)
     }
 
-    /// A caption row labelling the columns of an editable list, so the bare
-    /// text fields below it read clearly. Pass [title: fixedWidth?]; a nil width
-    /// means the column flexes (matching a non-fixed TextField).
-    private func columnHeader(_ cols: KeyValuePairs<String, CGFloat?>) -> some View {
+    // MARK: editable-list building blocks (plain layout — NOT a Form, so
+    // TextFields keep their in-field placeholders and gain no phantom labels)
+
+    /// A captioned column-header row aligned to the field widths below it.
+    private func columnHeaders(_ cols: [(String, CGFloat?)]) -> some View {
         HStack(spacing: 10) {
-            ForEach(Array(cols), id: \.key) { title, width in
-                Text(title.uppercased())
-                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(cols, id: \.0) { title, width in
+                Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     .frame(width: width, alignment: width == nil ? .leading : .trailing)
                     .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
             }
-            Color.clear.frame(width: 22)   // aligns over the remove button
+            Color.clear.frame(width: 24)   // sits over the remove button
         }
     }
 
-    private func removeButton(_ action: @escaping () -> Void) -> some View {
-        Button(role: .destructive, action: action) {
-            Image(systemName: "minus.circle.fill")
+    /// One editable row: the given fields in an HStack plus a trailing remove.
+    private func entryRow<Content: View>(onRemove: @escaping () -> Void,
+                                         @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 10) {
+            content()
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "minus.circle.fill")
+            }.buttonStyle(.borderless).foregroundStyle(.red).frame(width: 24)
         }
-        .buttonStyle(.borderless).foregroundStyle(.red).frame(width: 22)
+    }
+
+    /// A self-contained editable list tab: header, bordered card of rows, an
+    /// add button, and a Save button — built from plain stacks, not a Form.
+    private func editableList<Rows: View>(
+        title: String, footer: String, empty: String, isEmpty: Bool,
+        columns: some View, add: @escaping () -> Void, addTitle: String,
+        @ViewBuilder rows: () -> Rows
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title).font(.headline)
+                VStack(alignment: .leading, spacing: 10) {
+                    if isEmpty {
+                        Text(empty).font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        columns
+                        Divider()
+                        rows()
+                    }
+                    Button(action: add) {
+                        Label(addTitle, systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
+                    }.buttonStyle(.bordered).controlSize(.large)
+                }
+                .padding(12)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+
+                Text(footer).font(.caption).foregroundStyle(.secondary)
+
+                saveButton { store.settings.save() }
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+        }
     }
 
     // MARK: Days off

@@ -22,6 +22,11 @@ struct PopoverView: View {
                 }
                 .foregroundStyle(.secondary)
             }
+            HStack {
+                Spacer()
+                Text(AppInfo.displayVersion).font(.caption2).foregroundStyle(.tertiary)
+                Spacer()
+            }
         }
         .padding(14)
         .frame(width: 312)
