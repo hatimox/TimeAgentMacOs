@@ -92,16 +92,21 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Dynamic meeting shortcuts") {
-                ForEach($store.settings.dynamicMeetings) { $m in
-                    HStack(spacing: 8) {
-                        TextField("Name", text: $m.name)
-                        TextField("Task id", value: $m.taskId, format: .number).frame(width: 80)
-                        Button(role: .destructive) { store.settings.dynamicMeetings.removeAll { $0.id == m.id } }
-                            label: { Image(systemName: "minus.circle.fill") }.buttonStyle(.borderless).foregroundStyle(.red)
+                if store.settings.dynamicMeetings.isEmpty {
+                    Text("No shortcuts yet.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    columnHeader(["Name": nil, "Task id": 88])
+                    ForEach($store.settings.dynamicMeetings) { $m in
+                        HStack(spacing: 10) {
+                            TextField("e.g. Standup", text: $m.name).textFieldStyle(.roundedBorder)
+                            TextField("0", value: $m.taskId, format: .number)
+                                .textFieldStyle(.roundedBorder).frame(width: 88).multilineTextAlignment(.trailing)
+                            removeButton { store.settings.dynamicMeetings.removeAll { $0.id == m.id } }
+                        }
                     }
                 }
-                Button { store.settings.dynamicMeetings.append(.init(id: UUID().uuidString, name: "New meeting", taskId: 0, description: "")) }
-                    label: { Label("Add meeting", systemImage: "plus") }.buttonStyle(.borderless)
+                Button { store.settings.dynamicMeetings.append(.init(id: UUID().uuidString, name: "", taskId: 0, description: "")) }
+                    label: { Label("Add meeting", systemImage: "plus.circle.fill") }.buttonStyle(.borderless)
             }
             saveButton { store.settings.save() }
         }
@@ -111,17 +116,24 @@ struct SettingsView: View {
     private var recurring: some View {
         Form {
             Section {
-                ForEach($store.settings.recurring) { $r in
-                    HStack(spacing: 8) {
-                        TextField("Label", text: $r.label)
-                        TextField("Task id", value: $r.taskId, format: .number).frame(width: 80)
-                        TextField("Hours", value: $r.hours, format: .number).frame(width: 56)
-                        Button(role: .destructive) { store.settings.recurring.removeAll { $0.id == r.id } }
-                            label: { Image(systemName: "minus.circle.fill") }.buttonStyle(.borderless).foregroundStyle(.red)
+                if store.settings.recurring.isEmpty {
+                    Text("No recurring entries yet. Add one to auto-log it each working day.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    columnHeader(["Label": nil, "Task id": 88, "Hours": 64])
+                    ForEach($store.settings.recurring) { $r in
+                        HStack(spacing: 10) {
+                            TextField("e.g. Daily standup", text: $r.label).textFieldStyle(.roundedBorder)
+                            TextField("0", value: $r.taskId, format: .number)
+                                .textFieldStyle(.roundedBorder).frame(width: 88).multilineTextAlignment(.trailing)
+                            TextField("0", value: $r.hours, format: .number)
+                                .textFieldStyle(.roundedBorder).frame(width: 64).multilineTextAlignment(.trailing)
+                            removeButton { store.settings.recurring.removeAll { $0.id == r.id } }
+                        }
                     }
                 }
-                Button { store.settings.recurring.append(.init(id: UUID().uuidString, label: "New", taskId: 0, hours: 1)) }
-                    label: { Label("Add recurring", systemImage: "plus") }.buttonStyle(.borderless)
+                Button { store.settings.recurring.append(.init(id: UUID().uuidString, label: "", taskId: 0, hours: 1)) }
+                    label: { Label("Add recurring", systemImage: "plus.circle.fill") }.buttonStyle(.borderless)
             } header: { Text("Recurring entries") } footer: {
                 Text("Auto-logged once per working day on launch, skipping weekly days off and holidays.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -129,6 +141,28 @@ struct SettingsView: View {
             saveButton { store.settings.save() }
         }
         .formStyle(.grouped)
+    }
+
+    /// A caption row labelling the columns of an editable list, so the bare
+    /// text fields below it read clearly. Pass [title: fixedWidth?]; a nil width
+    /// means the column flexes (matching a non-fixed TextField).
+    private func columnHeader(_ cols: KeyValuePairs<String, CGFloat?>) -> some View {
+        HStack(spacing: 10) {
+            ForEach(Array(cols), id: \.key) { title, width in
+                Text(title.uppercased())
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .frame(width: width, alignment: width == nil ? .leading : .trailing)
+                    .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+            }
+            Color.clear.frame(width: 22)   // aligns over the remove button
+        }
+    }
+
+    private func removeButton(_ action: @escaping () -> Void) -> some View {
+        Button(role: .destructive, action: action) {
+            Image(systemName: "minus.circle.fill")
+        }
+        .buttonStyle(.borderless).foregroundStyle(.red).frame(width: 22)
     }
 
     // MARK: Days off
@@ -174,8 +208,25 @@ struct SettingsView: View {
             }
 
             if store.settings.region == "morocco" {
-                Section("Religious holidays (estimates — confirm/adjust)") {
+                Section {
                     Stepper("Year: \(holYear)", value: $holYear, in: 2026...2030)
+                } header: { Text("Holiday year") } footer: {
+                    Text("Public + religious holidays below are skipped for recurring auto-logging when Morocco is selected.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("Public holidays (fixed)") {
+                    ForEach(Holidays.fixedHolidaysNamed(holYear), id: \.date) { h in
+                        HStack {
+                            Image(systemName: "flag.fill").font(.caption2).foregroundStyle(.secondary)
+                            Text(h.name)
+                            Spacer()
+                            Text(h.date).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Religious holidays (estimates — confirm/adjust)") {
                     let slots = Holidays.religiousHolidays(holYear)
                     if slots.isEmpty {
                         Text("No estimates for \(holYear). Add specific days off above.")
