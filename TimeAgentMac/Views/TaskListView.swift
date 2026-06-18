@@ -224,6 +224,8 @@ struct ItemRow: View {
     @State private var date = Date()
     @State private var showSlots = false
     @State private var hovering = false
+    @State private var elapsed = "00:00:00"
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var loggedHours: Double { store.hours(for: item.id) }
     private var isBug: Bool { item.entityType == "Bugs" }
@@ -236,10 +238,22 @@ struct ItemRow: View {
             if showSlots { SlotsView(itemId: item.id) }
         }
         .padding(12)
-        .background(.background.opacity(hovering ? 1 : 0.55), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
+        .background(trackingBackground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(store.isTracking(item.id) ? AnyShapeStyle(Color.red.opacity(0.6)) : AnyShapeStyle(.quaternary)))
         .onHover { hovering = $0 }
         .task { states = await store.states(for: item) }
+        .onReceive(tick) { _ in if store.isTracking(item.id) { elapsed = Self.hms(store.trackingElapsed()) } }
+    }
+
+    private var trackingBackground: some ShapeStyle {
+        store.isTracking(item.id) ? AnyShapeStyle(Color.red.opacity(0.08))
+                                  : AnyShapeStyle(Color(.windowBackgroundColor).opacity(hovering ? 1 : 0.55))
+    }
+
+    private static func hms(_ secs: TimeInterval) -> String {
+        let s = Int(secs)
+        return String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
     }
 
     private var titleRow: some View {
@@ -250,6 +264,7 @@ struct ItemRow: View {
                 .foregroundStyle(.white).clipShape(Capsule())
             Text(item.name).fontWeight(.medium).lineLimit(1)
             Spacer()
+            trackButton
             if loggedHours > 0 {
                 Button { showSlots.toggle() } label: {
                     Label(store.fmt(loggedHours), systemImage: showSlots ? "chevron.up" : "clock")
@@ -258,6 +273,22 @@ struct ItemRow: View {
                 .buttonStyle(.bordered).controlSize(.small).tint(.green)
             }
         }
+    }
+
+    private var trackButton: some View {
+        let active = store.isTracking(item.id)
+        return Button { Task { await store.toggleTracking(item: item) } } label: {
+            if active {
+                Label("Stop & Log \(elapsed)", systemImage: "stop.fill")
+                    .font(.caption.monospacedDigit())
+            } else {
+                Label("Start", systemImage: "play.fill").font(.caption)
+            }
+        }
+        .buttonStyle(.borderedProminent).controlSize(.small)
+        .tint(active ? .red : .accentColor)
+        // Disable starting a different task while one is already running.
+        .disabled(store.isTracking && !active)
     }
 
     private var metaRow: some View {

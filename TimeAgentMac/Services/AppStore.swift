@@ -14,6 +14,11 @@ final class AppStore: ObservableObject {
     @Published var scopeAll = false       // false = current sprint only
     @Published var loading = false
 
+    /// Manual per-task stopwatch (one at a time): the item id being tracked and
+    /// when it started. Nil when nothing is running.
+    @Published private(set) var trackingId: Int?
+    private var trackingStart: Date?
+
     let watcher = MeetingWatcher()
     private var client: TPClient?
     private var settingsObserver: AnyCancellable?
@@ -69,6 +74,49 @@ final class AppStore: ObservableObject {
     }
 
     func hours(for itemId: Int) -> Double { times.filter { $0.itemId == itemId }.reduce(0) { $0 + $1.hours } }
+
+    // MARK: manual stopwatch (per-task Start / Stop & Log)
+
+    var isTracking: Bool { trackingId != nil }
+    func isTracking(_ itemId: Int) -> Bool { trackingId == itemId }
+
+    /// Toggle the stopwatch for an item: start it, or stop+log if it's running.
+    func toggleTracking(item: WorkItem) async {
+        if trackingId == item.id { await stopTracking() }
+        else { await startTracking(item: item) }
+    }
+
+    /// Start tracking an item. Only one runs at a time — any running timer is
+    /// stopped and logged first.
+    func startTracking(item: WorkItem) async {
+        if trackingId != nil { await stopTracking() }
+        trackingId = item.id
+        trackingStart = Date()
+    }
+
+    /// Stop the running timer and log the elapsed time to its task (rounded to
+    /// 2dp; nothing logged if it rounds to zero).
+    func stopTracking() async {
+        guard let id = trackingId, let start = trackingStart else { return }
+        trackingId = nil; trackingStart = nil
+        let hours = (Date().timeIntervalSince(start) / 3600 * 100).rounded() / 100   // 2dp
+        guard hours > 0 else { status = "Too short — nothing logged"; return }
+        let name = items.first { $0.id == id }?.name ?? "#\(id)"
+        guard let client else { status = "Not configured"; return }
+        status = "Logging…"
+        do {
+            _ = try await client.logTime(entityId: id, hours: hours, description: "",
+                                         date: Date(), tzOffsetMinutes: settings.tzOffsetMinutes)
+            status = "Logged \(fmt(hours)) to “\(name)”"
+            await refresh()
+        } catch { status = "Log failed: \(msg(error))" }
+    }
+
+    /// Seconds elapsed on the running timer (0 if none).
+    func trackingElapsed() -> TimeInterval {
+        guard let start = trackingStart else { return 0 }
+        return Date().timeIntervalSince(start)
+    }
 
     // MARK: time logging
 
