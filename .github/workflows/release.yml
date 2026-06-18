@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]            # e.g. v1.0.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without leading v), e.g. 1.0.0"
+        required: true
+
+permissions:
+  contents: write           # needed to create the GitHub Release
+
+jobs:
+  release:
+    name: Build & publish
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"   # strip leading "v" from the tag
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "Building version $V"
+
+      - name: Package universal .app + .dmg
+        run: VERSION="${{ steps.ver.outputs.version }}" ./scripts/package.sh
+
+      - name: Zip the .app
+        run: |
+          cd dist
+          ditto -c -k --keepParent "TimeAgent.app" "TimeAgent-${{ steps.ver.outputs.version }}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TimeAgent ${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## TimeAgent ${{ steps.ver.outputs.version }}
+
+            Native macOS menu-bar build (universal: Apple Silicon + Intel).
+
+            **Install:** open the `.dmg` and drag **TimeAgent** to Applications.
+
+            > This build is **not notarized**. On first launch, right-click the app
+            > and choose **Open** (or run
+            > `xattr -dr com.apple.quarantine /Applications/TimeAgent.app`) to get
+            > past Gatekeeper.
+          files: |
+            dist/TimeAgent-${{ steps.ver.outputs.version }}.dmg
+            dist/TimeAgent-${{ steps.ver.outputs.version }}.zip
