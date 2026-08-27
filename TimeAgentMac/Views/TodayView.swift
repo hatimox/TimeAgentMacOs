@@ -46,7 +46,12 @@ private struct TodayEntryRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(itemName).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Button { store.openInTP(entry.itemId) } label: {
+                Text(itemName).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.blue)
+            .help("Open in TargetProcess")
             TextField("hrs", text: $hrs).frame(width: 50).textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.center)
             TextField("note", text: $note).textFieldStyle(.roundedBorder).frame(maxWidth: 200)
