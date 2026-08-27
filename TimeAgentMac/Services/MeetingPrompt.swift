@@ -8,20 +8,26 @@ import AppKit
 enum MeetingPrompt {
     static func present(store: AppStore, start: Date, end: Date) async {
         let raw = end.timeIntervalSince(start) / 3600
-        let hours = (store.billableHours(raw) * 100).rounded() / 100
+        let defaultHours = (store.billableHours(raw) * 100).rounded() / 100
         let f = DateFormatter(); f.dateFormat = "HH:mm"
         let win = "\(f.string(from: start))-\(f.string(from: end))"
 
         let hasDynamic = !store.settings.dynamicMeetings.isEmpty
         let alert = NSAlert()
-        alert.messageText = "Meeting ended (\(win), \(String(format: "%.2f", hours))h)"
-        alert.informativeText = "How should this be logged?"
+        alert.messageText = "Meeting ended (\(win))"
+        alert.informativeText = "Hours to log (editable). How should this be logged?"
+        let hoursField = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+        hoursField.stringValue = String(format: "%.2f", defaultHours)
+        hoursField.alignment = .right
+        alert.accessoryView = hoursField
         alert.addButton(withTitle: "Daily")
         if hasDynamic { alert.addButton(withTitle: "Defined list") }
         alert.addButton(withTitle: "Choose task")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = hoursField
         let resp = alert.runModal()
+        let hours = Double(hoursField.stringValue.trimmingCharacters(in: .whitespaces)).map { max(0, $0) } ?? defaultHours
 
         // Map response → action accounting for the optional Defined-list button.
         var actions = ["daily"]
