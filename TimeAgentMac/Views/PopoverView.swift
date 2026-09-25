@@ -84,7 +84,9 @@ struct PopoverView: View {
         let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes, monthOffset: monthOffset)
         return VStack(spacing: 8) {
             HStack(spacing: 8) {
-                tile("Today", t.today, "sun.max", .orange)
+                Button { AppDelegate.shared?.openToday() } label: {
+                    tile("Today", t.today, "sun.max", .orange)
+                }.buttonStyle(.plain)
                 tile("Week", t.week, "calendar", .blue)
             }
             HStack {
