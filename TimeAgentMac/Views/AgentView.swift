@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// Agent window for one User Story: setup (repo + base branch), live
-/// transcript, question answering, task review, and push / MR.
+/// Agent window for one User Story or Task/Bug: setup (repo + branch), live
+/// transcript, question answering, task / plan approval, and push / MR.
 struct AgentView: View {
     @EnvironmentObject var store: AppStore
     @ObservedObject var run: AgentRun
@@ -17,7 +17,8 @@ struct AgentView: View {
             if run.phase == .setup { setup } else {
                 HSplitView {
                     transcript.frame(minWidth: 420)
-                    taskPanel.frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+                    Group { if run.isStory { taskPanel } else { planPanel } }
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
                 }
                 Divider()
                 bottomBar
@@ -32,9 +33,9 @@ struct AgentView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles").foregroundStyle(.purple)
-            Button("US #\(run.usId)") { store.openInTP(run.usId) }
+            Button("\(run.kindLabel) #\(run.id)") { store.openInTP(run.id) }
                 .buttonStyle(.link).font(.callout.monospacedDigit())
-            Text(run.usName).font(.headline).lineLimit(1)
+            Text(run.name).font(.headline).lineLimit(1)
             Spacer()
             if run.busy { ProgressView().controlSize(.small) }
             phaseBadge
@@ -52,6 +53,7 @@ struct AgentView: View {
             case .understanding: return ("Understanding", .blue)
             case .needsAnswer: return ("Waiting for your answer", .orange)
             case .reviewTasks: return ("Review tasks", .orange)
+            case .reviewPlan: return ("Review plan", .orange)
             case .creatingTasks: return ("Creating tasks", .blue)
             case .coding: return ("Coding", .purple)
             case .needsInput: return ("Waiting for you", .orange)
@@ -76,10 +78,25 @@ struct AgentView: View {
                     TextField("Folder", text: $run.repoPath, prompt: Text("~/code/my-project"))
                     Button("Choose…") { chooseFolder() }
                 }
-                TextField("Base branch", text: $run.baseBranch, prompt: Text("main"))
+                TextField("Base branch", text: $run.baseBranch, prompt: Text("master"))
+            }
+            Section("Branch") {
+                if !run.isStory && run.usId != 0 {
+                    Picker("Work on", selection: $run.branchMode) {
+                        Text("US branch (\(run.usBranch))").tag(AgentRun.BranchMode.usBranch)
+                        Text("New branch from the US branch").tag(AgentRun.BranchMode.newFromUS)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+                if !run.isStory && (run.usId == 0 || run.branchMode == .newFromUS) {
+                    TextField("New branch", text: $run.newBranch)
+                }
+                Text(branchSummary).font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Text("Creates a worktree next to the repo on **\(run.branch)** from **\(run.baseBranch)**. The agent reads the US, asks questions if needed, proposes tasks for you to approve, then codes. Time runs from Start and is logged split across the created tasks.")
+                Text(run.isStory
+                     ? "The agent reads the US, asks questions if needed and proposes tasks. Nothing is coded until you approve the tasks. Time is logged split across the created tasks."
+                     : "The agent reads the \(run.kindLabel.lowercased()) (and its US), asks questions if needed and proposes a plan. Nothing is coded until you approve the plan. All time is logged to this \(run.kindLabel.lowercased()).")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -88,10 +105,18 @@ struct AgentView: View {
                     Label("Start agent", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(run.repoPath.isEmpty || run.baseBranch.isEmpty)
+                .disabled(run.repoPath.isEmpty || run.baseBranch.isEmpty || run.workBranch.isEmpty)
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// e.g. "Commits on feature/TP-42, cut from feature/US-7 (created from master if missing). MR → feature/US-7."
+    private var branchSummary: String {
+        var s = "Commits on \(run.workBranch), cut from \(run.parentBranch)"
+        if run.parentBranch == run.usBranch { s += " (created from \(run.baseBranch) if missing)" }
+        else if run.workBranch == run.usBranch { s = "Commits on \(run.usBranch) (created from \(run.baseBranch) if missing)" }
+        return s + ". MR → \(run.parentBranch)."
     }
 
     private func chooseFolder() {
@@ -100,7 +125,6 @@ struct AgentView: View {
         panel.prompt = "Use this repository"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         run.repoPath = url.path
-        Task { if let b = await AgentRun.defaultBranch(of: url.path) { run.baseBranch = b } }
     }
 
     // MARK: transcript
@@ -164,6 +188,34 @@ struct AgentView: View {
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 Text("Or reply below to ask for a different breakdown.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+
+    /// Item runs: what's being worked on + the plan approval gate.
+    private var planPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("WORKING ON").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(run.name).font(.callout.weight(.semibold))
+            HStack(spacing: 8) {
+                Button("#\(run.id)") { store.openInTP(run.id) }.buttonStyle(.link)
+                if run.usId != 0 {
+                    Button("US #\(run.usId)") { store.openInTP(run.usId) }.buttonStyle(.link)
+                }
+            }
+            .font(.caption.monospacedDigit())
+            Label(run.workBranch, systemImage: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            if run.phase == .reviewPlan {
+                Button { run.approvePlan() } label: {
+                    Label("Approve plan & start coding", systemImage: "checkmark.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                Text("Or reply below to change the plan.").font(.caption).foregroundStyle(.secondary)
+            } else if [.understanding, .needsAnswer].contains(run.phase) {
+                Text("Coding starts only after you approve the plan.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(12)
