@@ -29,6 +29,12 @@ enum Totals {
         return (today, week, month, f.string(from: mbase))
     }
 
+    static func todayString(offsetMinutes: Int) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: offsetMinutes * 60) ?? .current
+        return dayString(Date(), cal)
+    }
+
     private static func dayString(_ d: Date, _ cal: Calendar) -> String {
         let c = cal.dateComponents([.year, .month, .day], from: d)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)

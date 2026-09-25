@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var tasksWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var todayWindow: NSWindow?
     /// One agent window per User Story, remembering which run it shows.
     private var agentWindows: [Int: (window: NSWindow, run: ObjectIdentifier)] = [:]
     private var recurringTimer: Timer?
@@ -57,14 +58,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildPopover() {
         popover = NSPopover()
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(
+        let hosting = NSHostingController(
             rootView: PopoverView(watcher: store.watcher).environmentObject(store))
+        // Keeps preferredContentSize in sync with the SwiftUI content's ideal
+        // size (which grows when a meeting is active) *before* NSPopover picks
+        // a position, so it doesn't grow the wrong direction (above the menu
+        // bar, unreachable) after an initial mis-sized layout pass.
+        hosting.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hosting
     }
 
     @objc private func togglePopover() {
         guard let btn = statusItem.button else { return }
         if popover.isShown { popover.performClose(nil) }
-        else { popover.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY); NSApp.activate(ignoringOtherApps: true) }
+        else {
+            popover.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
+            clampPopoverOnScreen()
+        }
+    }
+
+    /// Safety net: if the popover window ends up extending above the menu bar
+    /// (unreachable), pull it back down so it's fully on-screen.
+    private func clampPopoverOnScreen() {
+        guard let win = popover.contentViewController?.view.window,
+              let screen = win.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        var frame = win.frame
+        if frame.maxY > visible.maxY {
+            frame.origin.y = visible.maxY - frame.height
+            win.setFrame(frame, display: true)
+        }
     }
 
     @objc private func meetingChanged() {
@@ -73,6 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         btn.image = NSImage(systemSymbolName: inMeeting ? "clock.badge.fill" : "clock",
                             accessibilityDescription: "TimeAgent")
         btn.image?.isTemplate = !inMeeting
+    }
+
+    func openToday() {
+        if todayWindow == nil {
+            let w = makeWindow(title: "TimeAgent — Today",
+                               view: TodayView().environmentObject(store), size: NSSize(width: 560, height: 420))
+            todayWindow = w
+        }
+        show(todayWindow)
     }
 
     func openTasks() {
