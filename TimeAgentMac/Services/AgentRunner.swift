@@ -199,8 +199,8 @@ final class AgentRun: ObservableObject, Identifiable {
             usId = it.usId; name = it.name; usName = it.usName; projectName = it.projectName
             kindLabel = it.displayType
         }
-        // Bugs go on bug/TP-<id>, everything else on feature/TP-<id>.
-        newBranch = "\(kindLabel == "Bug" ? "bug" : "feature")/TP-\(target.id)"
+        // Bugs go on bug/<id>, everything else on feature/TP-<id>.
+        newBranch = kindLabel == "Bug" ? "bug/\(target.id)" : "feature/TP-\(target.id)"
         let saved = store.settings.agentRepos[projectName] ?? [:]
         repoPath = saved["path"] ?? ""
         baseBranch = saved["branch"] ?? "master"
