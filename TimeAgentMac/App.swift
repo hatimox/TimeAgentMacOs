@@ -145,13 +145,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.contentViewController = NSHostingController(rootView: view)
         w.center()
         w.isReleasedWhenClosed = false
+        NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose(_:)),
+                                               name: NSWindow.willCloseNotification, object: w)
         return w
     }
 
+    /// Windows appear in the Dock / Cmd-Tab while open: switch to a regular
+    /// app on show, and back to menu-bar-only once the last window closes.
     private func show(_ w: NSWindow?) {
         guard let w else { return }
         popover.performClose(nil)
+        NSApp.setActivationPolicy(.regular)
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func windowWillClose(_ note: Notification) {
+        let closing = note.object as? NSWindow
+        DispatchQueue.main.async {
+            let anyOpen = NSApp.windows.contains {
+                $0 !== closing && $0.isVisible && $0.styleMask.contains(.titled)
+            }
+            if !anyOpen { NSApp.setActivationPolicy(.accessory) }
+        }
+    }
+
+    /// Clicking the Dock icon with no window visible reopens the task list.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openTasks() }
+        return true
     }
 }
