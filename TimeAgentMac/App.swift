@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var tasksWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    /// One agent window per User Story, remembering which run it shows.
+    private var agentWindows: [Int: (window: NSWindow, run: ObjectIdentifier)] = [:]
     private var recurringTimer: Timer?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -89,6 +91,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = w
         }
         show(settingsWindow)
+    }
+
+    func openAgent(usId: Int, usName: String, projectName: String) {
+        let run = store.agentRun(usId: usId, usName: usName, projectName: projectName)
+        if agentWindows[usId]?.run != ObjectIdentifier(run) {
+            agentWindows[usId]?.window.close()
+            let w = makeWindow(title: "Agent — US #\(usId)",
+                               view: AgentView(run: run).environmentObject(store), size: NSSize(width: 960, height: 640))
+            agentWindows[usId] = (w, ObjectIdentifier(run))
+        }
+        show(agentWindows[usId]?.window)
     }
 
     private func makeWindow<V: View>(title: String, view: V, size: NSSize) -> NSWindow {

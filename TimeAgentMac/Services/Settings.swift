@@ -20,6 +20,13 @@ final class Settings: ObservableObject {
     @Published var region: String = "none"
     @Published var religiousSlots: [ReligiousSlot] = []
     @Published var token: String = ""
+    // Agent
+    @Published var agentClaudePath: String = ""        // empty = auto-detect
+    @Published var agentModel: String = "sonnet"
+    @Published var agentExtraTools: String = ""        // e.g. "Bash(npm test:*), Bash(make:*)"
+    @Published var agentInstructions: String = ""
+    @Published var mrReviewers: String = ""            // comma-separated GitLab usernames
+    @Published var agentRepos: [String: [String: String]] = [:]   // project → {path, branch}
 
     static let dir: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -55,6 +62,12 @@ final class Settings: ObservableObject {
                 return ReligiousSlot(key: key, date: date, on: $0["on"] as? Bool ?? true)
             }
         }
+        agentClaudePath = j["agentClaudePath"] as? String ?? ""
+        agentModel = j["agentModel"] as? String ?? "sonnet"
+        agentExtraTools = j["agentExtraTools"] as? String ?? ""
+        agentInstructions = j["agentInstructions"] as? String ?? ""
+        mrReviewers = j["mrReviewers"] as? String ?? ""
+        agentRepos = j["agentRepos"] as? [String: [String: String]] ?? [:]
         if let recs = j["recurring"] as? [[String: Any]] {
             recurring = recs.map {
                 RecurringEntry(id: $0["id"] as? String ?? UUID().uuidString,
@@ -81,6 +94,9 @@ final class Settings: ObservableObject {
             "dailyTaskId": dailyTaskId, "meetingsTaskId": meetingsTaskId,
             "meetingMinMinutes": meetingMinMinutes, "meetingStepMinutes": meetingStepMinutes,
             "weeklyOff": weeklyOff, "daysOff": daysOff, "region": region,
+            "agentClaudePath": agentClaudePath, "agentModel": agentModel,
+            "agentExtraTools": agentExtraTools, "agentInstructions": agentInstructions,
+            "mrReviewers": mrReviewers, "agentRepos": agentRepos,
         ]
         j["religiousSlots"] = religiousSlots.map { ["key": $0.key, "date": $0.date, "on": $0.on] }
         j["recurring"] = recurring.map { ["id": $0.id, "label": $0.label, "taskId": $0.taskId, "hours": $0.hours] }
