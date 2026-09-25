@@ -1,9 +1,9 @@
 import Foundation
 import AppKit
 
-/// Runs a Claude Code agent against a User Story: understand → (questions) →
-/// propose tasks → create them in TP → code in a git worktree → push + GitLab
-/// MR. The whole run is timed and logged split across the created tasks.
+/// Runs a Claude Code agent against a User Story or a single Task/Bug:
+/// understand → (questions) → tasks / plan for approval → code in a git
+/// worktree → push + GitLab MR. The whole run is timed and logged to TP.
 
 struct AgentLogLine: Identifiable {
     enum Kind { case agent, tool, user, info, error }
@@ -115,22 +115,45 @@ final class ClaudeProcess {
 
 // MARK: - one agent run
 
+/// What a run works on: a whole User Story (the agent breaks it into tasks)
+/// or a single existing Task/Bug (the agent plans, you approve, it codes).
+enum AgentTarget {
+    case story(id: Int, name: String, projectName: String)
+    case item(WorkItem)
+
+    var id: Int {
+        switch self { case .story(let id, _, _): return id; case .item(let it): return it.id }
+    }
+}
+
 @MainActor
 final class AgentRun: ObservableObject, Identifiable {
     enum Phase: Equatable {
-        case setup, understanding, needsAnswer, reviewTasks, creatingTasks
+        case setup, understanding, needsAnswer, reviewTasks, reviewPlan, creatingTasks
         case coding, needsInput, readyToFinish, finishing, done, stopped
         case failed(String)
     }
 
-    let usId: Int
+    /// Item runs: work directly on the US branch, or on a new branch cut from it.
+    enum BranchMode: String, CaseIterable, Identifiable {
+        case usBranch, newFromUS
+        var id: String { rawValue }
+    }
+
+    let target: AgentTarget
+    let id: Int                  // TP id of the target
+    let usId: Int                // parent US (== id for story runs, 0 if a task has none)
     let projectName: String
+    let kindLabel: String        // "US" | "Task" | "Bug"
+    @Published var name: String
     @Published var usName: String
     @Published var phase: Phase = .setup
     @Published var log: [AgentLogLine] = []
     @Published var tasks: [AgentTask] = []
     @Published var repoPath: String
     @Published var baseBranch: String
+    @Published var branchMode: BranchMode = .newFromUS
+    @Published var newBranch: String
     @Published var mrURL: String?
     @Published private(set) var busy = false          // an agent turn is in progress
     @Published private(set) var currentTask: Int?      // index into tasks
@@ -138,6 +161,7 @@ final class AgentRun: ObservableObject, Identifiable {
 
     unowned let store: AppStore
     private var story: TPClient.UserStoryInfo?
+    private var itemDetail: TPClient.ItemDetail?
     private var proc: ClaudeProcess?
     private var afterExit: (() -> Void)?
     private var sessionId: String?
@@ -149,23 +173,46 @@ final class AgentRun: ObservableObject, Identifiable {
     private var bucket = -1
     private var bucketSince = Date()
 
-    var branch: String { "feature/US-\(usId)" }
+    var isStory: Bool { if case .story = target { return true }; return false }
+    var usBranch: String { "feature/US-\(usId)" }
+    /// The branch the agent commits on.
+    var workBranch: String {
+        if isStory { return usBranch }
+        if usId == 0 || branchMode == .newFromUS { return newBranch.trimmingCharacters(in: .whitespaces) }
+        return usBranch
+    }
+    /// The branch `workBranch` is cut from, and the MR target.
+    var parentBranch: String {
+        (isStory || usId == 0 || branchMode == .usBranch) ? baseBranch : usBranch
+    }
     var isFinished: Bool { phase == .done || phase == .stopped }
     var elapsed: TimeInterval { startedAt.map { Date().timeIntervalSince($0) } ?? 0 }
-    var canReply: Bool { !busy && [.needsAnswer, .needsInput, .readyToFinish].contains(phase) }
+    var canReply: Bool { !busy && [.needsAnswer, .reviewTasks, .reviewPlan, .needsInput, .readyToFinish].contains(phase) }
     var canFinish: Bool { !busy && [.needsInput, .readyToFinish].contains(phase) }
 
-    init(store: AppStore, usId: Int, usName: String, projectName: String) {
-        self.store = store; self.usId = usId; self.usName = usName; self.projectName = projectName
+    init(store: AppStore, target: AgentTarget) {
+        self.store = store; self.target = target; self.id = target.id
+        switch target {
+        case .story(let id, let name, let project):
+            usId = id; self.name = name; usName = name; projectName = project; kindLabel = "US"
+        case .item(let it):
+            usId = it.usId; name = it.name; usName = it.usName; projectName = it.projectName
+            kindLabel = it.displayType
+        }
+        newBranch = "feature/TP-\(target.id)"
         let saved = store.settings.agentRepos[projectName] ?? [:]
         repoPath = saved["path"] ?? ""
-        baseBranch = saved["branch"] ?? "main"
+        baseBranch = saved["branch"] ?? "master"
     }
 
     private var settings: Settings { store.settings }
     private var claudePath: String? {
         let p = settings.agentClaudePath.trimmingCharacters(in: .whitespaces)
         return p.isEmpty ? Shell.which("claude") : p
+    }
+    private var processId: Int {
+        if case .item(let it) = target { return it.processId }
+        return story?.processId ?? 0
     }
 
     // MARK: lifecycle
@@ -179,23 +226,27 @@ final class AgentRun: ObservableObject, Identifiable {
         guard FileManager.default.fileExists(atPath: repo.appendingPathComponent(".git").path) else {
             return fail("Not a git repository: \(repo.path)")
         }
+        guard !workBranch.isEmpty else { return fail("Enter a branch name") }
         settings.agentRepos[projectName] = ["path": repoPath, "branch": baseBranch]
         settings.save()
 
         phase = .understanding; busy = true
         startedAt = Date(); bucketSince = startedAt!
-        info("Loading US #\(usId)…")
-        do { story = try await client.fetchUserStory(id: usId) }
-        catch { return fail("Could not load US: \((error as? TPError)?.message ?? error.localizedDescription)") }
-        if let story, !story.name.isEmpty { usName = story.name }
+        info("Loading \(kindLabel) #\(id)…")
+        do {
+            switch target {
+            case .story:
+                story = try await client.fetchUserStory(id: id)
+                if let n = story?.name, !n.isEmpty { name = n; usName = n }
+            case .item(let it):
+                itemDetail = try await client.fetchItemDetail(entityType: it.entityType, id: it.id)
+            }
+        } catch { return fail("Could not load \(kindLabel): \((error as? TPError)?.message ?? error.localizedDescription)") }
 
-        guard let wt = await makeWorktree(repo) else { return }
+        guard let wt = await prepareWorktree(repo) else { return }
         worktree = wt
-        await store.moveState(entityType: "UserStories", stateKey: "UserStory", id: usId,
-                              processId: story?.processId ?? 0, matching: "progress")
-        launch(claude, extra: ["--permission-mode", "plan",
-                               "--allowedTools", "Read,Glob,Grep,Bash(git log:*),Bash(git diff:*),Bash(ls:*)"],
-               prompt: understandPrompt)
+        await moveTargetState(matching: "progress")
+        launch(claude, extra: planArgs, prompt: isStory ? storyPrompt : itemPrompt)
     }
 
     /// User answer / follow-up. Relaunches (resuming the session) if the agent exited.
@@ -203,14 +254,14 @@ final class AgentRun: ObservableObject, Identifiable {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, canReply else { return }
         append(.user, t)
-        let coding = phase != .needsAnswer
+        let coding = ![.needsAnswer, .reviewTasks, .reviewPlan].contains(phase)
         phase = coding ? .coding : .understanding
         busy = true
         if let proc { proc.send(t) }
         else if let claude = claudePath { launch(claude, extra: coding ? codingArgs : planArgs, prompt: t) }
     }
 
-    /// Create the reviewed tasks in TP, then restart the agent in edit mode.
+    /// Story runs: create the reviewed tasks in TP, then start coding.
     func approveTasks() async {
         guard let client = store.client, let story else { return }
         tasks.removeAll { $0.name.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -218,7 +269,7 @@ final class AgentRun: ObservableObject, Identifiable {
         phase = .creatingTasks
         for i in tasks.indices where tasks[i].tpId == 0 {
             do {
-                tasks[i].tpId = try await client.createTask(usId: usId, projectId: story.projectId,
+                tasks[i].tpId = try await client.createTask(usId: id, projectId: story.projectId,
                                                             name: tasks[i].name, description: tasks[i].description)
                 info("Created task #\(tasks[i].tpId) — \(tasks[i].name)")
             } catch {
@@ -227,14 +278,25 @@ final class AgentRun: ObservableObject, Identifiable {
             }
         }
         Task { await store.refresh() }
+        startCoding(prompt: storyCodingPrompt)
+    }
+
+    /// Item runs: the plan was approved — start coding.
+    func approvePlan() {
+        guard phase == .reviewPlan else { return }
+        append(.user, "Plan approved — start coding.")
+        startCoding(prompt: itemCodingPrompt)
+    }
+
+    /// Restart the agent (same conversation) with edit permissions.
+    private func startCoding(prompt: String) {
         phase = .coding; busy = true
         guard let claude = claudePath else { return }
-        let prompt = codingPrompt
         let start = { [weak self] in guard let self else { return }; self.launch(claude, extra: self.codingArgs, prompt: prompt) }
         if let proc { afterExit = start; proc.closeInput() } else { start() }
     }
 
-    /// Commit leftovers, push the feature branch, open the GitLab MR, log time.
+    /// Commit leftovers, push the work branch, open the GitLab MR, log time.
     func finish() async {
         guard let wt = worktree else { return }
         phase = .finishing
@@ -242,31 +304,35 @@ final class AgentRun: ObservableObject, Identifiable {
         if !(await Shell.run(["git", "status", "--porcelain"], cwd: wt)).out
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             _ = await Shell.run(["git", "add", "-A"], cwd: wt)
-            _ = await Shell.run(["git", "commit", "-m", "US#\(usId): \(usName) (agent)"], cwd: wt)
+            _ = await Shell.run(["git", "commit", "-m", "\(isStory ? "US" : "TP")#\(id): \(name)"], cwd: wt)
         }
-        info("Pushing \(branch)…")
-        let push = await Shell.run(["git", "push", "-u", "origin", branch], cwd: wt)
+        // A task branch cut from a local-only US branch needs that target on the remote.
+        if parentBranch != baseBranch,
+           await Shell.run(["git", "ls-remote", "--exit-code", "--heads", "origin", parentBranch], cwd: wt).code != 0 {
+            info("Pushing \(parentBranch)…")
+            _ = await Shell.run(["git", "push", "origin", parentBranch], cwd: wt)
+        }
+        info("Pushing \(workBranch)…")
+        let push = await Shell.run(["git", "push", "-u", "origin", workBranch], cwd: wt)
         guard push.code == 0 else {
             append(.error, "git push failed:\n\(push.out)"); phase = .readyToFinish; return
         }
         if Shell.which("glab") != nil {
-            var args = ["glab", "mr", "create", "--source-branch", branch, "--target-branch", baseBranch,
-                        "--title", "US#\(usId): \(usName)", "--description", mrDescription,
-                        "--remove-source-branch", "--yes"]
+            var args = ["glab", "mr", "create", "--source-branch", workBranch, "--target-branch", parentBranch,
+                        "--title", mrTitle, "--description", mrDescription, "--remove-source-branch", "--yes"]
             for r in settings.mrReviewers.split(separator: ",") {
-                let name = r.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty { args += ["--reviewer", name] }
+                let n = r.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { args += ["--reviewer", n] }
             }
             let mr = await Shell.run(args, cwd: wt)
-            if mr.code == 0 { mrURL = Self.firstURL(in: mr.out); info("Merge request created") }
+            if mr.code == 0 { mrURL = Self.firstURL(in: mr.out); info("Merge request created → \(parentBranch)") }
             else { append(.error, "glab mr create failed:\n\(mr.out)"); mrURL = Self.firstURL(in: push.out) }
         } else {
             mrURL = Self.firstURL(in: push.out)
             info("glab not installed — branch pushed; open the merge request from the link.")
         }
         await logTime()
-        await store.moveState(entityType: "UserStories", stateKey: "UserStory", id: usId,
-                              processId: story?.processId ?? 0, matching: "review")
+        await moveTargetState(matching: "review")
         phase = .done
     }
 
@@ -279,7 +345,21 @@ final class AgentRun: ObservableObject, Identifiable {
         phase = .stopped
     }
 
+    private func moveTargetState(matching: String) async {
+        switch target {
+        case .story:
+            await store.moveState(entityType: "UserStories", stateKey: "UserStory", id: id,
+                                  processId: processId, matching: matching)
+        case .item(let it):
+            await store.moveState(entityType: it.entityType, stateKey: it.entityType == "Bugs" ? "Bug" : "Task",
+                                  id: it.id, processId: it.processId, matching: matching)
+        }
+    }
+
     // MARK: process plumbing
+
+    /// Never add AI co-author / attribution trailers to commits or MRs.
+    private static let noAttribution = #"{"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}}"#
 
     private var planArgs: [String] {
         ["--permission-mode", "plan", "--allowedTools", "Read,Glob,Grep,Bash(git log:*),Bash(git diff:*),Bash(ls:*)"]
@@ -298,7 +378,8 @@ final class AgentRun: ObservableObject, Identifiable {
     private func launch(_ claude: String, extra: [String], prompt: String) {
         guard let wt = worktree else { return }
         var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json",
-                    "--verbose", "--model", settings.agentModel.isEmpty ? "sonnet" : settings.agentModel]
+                    "--verbose", "--model", settings.agentModel.isEmpty ? "sonnet" : settings.agentModel,
+                    "--settings", Self.noAttribution]
         if let sessionId { args += ["--resume", sessionId] }
         args += extra
         let p = ClaudeProcess(executable: claude, args: args, cwd: wt)
@@ -337,7 +418,10 @@ final class AgentRun: ObservableObject, Identifiable {
                 case "tool_use":
                     let name = c["name"] as? String ?? "tool"
                     let input = c["input"] as? [String: Any] ?? [:]
-                    if name == "ExitPlanMode", let plan = input["plan"] as? String { turnText += plan + "\n" }
+                    if name == "ExitPlanMode", let plan = input["plan"] as? String {
+                        turnText += plan + "\n"
+                        append(.agent, plan)
+                    }
                     append(.tool, toolSummary(name, input))
                 default: break
                 }
@@ -356,7 +440,8 @@ final class AgentRun: ObservableObject, Identifiable {
         busy = false
         switch phase {
         case .understanding:
-            if let ts = Self.parseTasks(text), !ts.isEmpty { tasks = ts; phase = .reviewTasks }
+            if isStory, let ts = Self.parseTasks(text), !ts.isEmpty { tasks = ts; phase = .reviewTasks }
+            else if !isStory, text.contains("@@PLAN_READY@@") { phase = .reviewPlan }
             else { phase = .needsAnswer }
         case .coding:
             if text.contains("@@DONE@@") {
@@ -368,9 +453,9 @@ final class AgentRun: ObservableObject, Identifiable {
         }
     }
 
-    /// `@@TASK n@@` switches the time bucket and moves the TP task to In Progress.
+    /// Story runs: `@@TASK n@@` switches the time bucket and moves that TP task to In Progress.
     private func scanMarkers(_ t: String) {
-        guard let re = try? NSRegularExpression(pattern: "@@TASK (\\d+)@@") else { return }
+        guard isStory, let re = try? NSRegularExpression(pattern: "@@TASK (\\d+)@@") else { return }
         for m in re.matches(in: t, range: NSRange(t.startIndex..., in: t)) {
             guard let r = Range(m.range(at: 1), in: t), let n = Int(t[r]), tasks.indices.contains(n - 1) else { continue }
             switchBucket(n - 1)
@@ -378,7 +463,7 @@ final class AgentRun: ObservableObject, Identifiable {
             let tpId = tasks[n - 1].tpId
             if tpId != 0 {
                 Task { await store.moveState(entityType: "Tasks", stateKey: "Task", id: tpId,
-                                             processId: story?.processId ?? 0, matching: "progress") }
+                                             processId: processId, matching: "progress") }
             }
         }
     }
@@ -391,74 +476,110 @@ final class AgentRun: ObservableObject, Identifiable {
         bucket = n; bucketSince = now
     }
 
-    /// Log the full run time: each task gets its own coding time plus an even
-    /// share of the time before coding started. No tasks → log on the US.
+    /// Log the full run time. Item runs: all on the item. Story runs: each task
+    /// gets its coding time plus an even share of the pre-coding time; no tasks
+    /// → on the US.
     private func logTime() async {
         guard startedAt != nil, let client = store.client else { return }
         startedAt = nil
         switchBucket(bucket)
+        let total = buckets.values.reduce(0, +)
         let created = tasks.indices.filter { tasks[$0].tpId != 0 }
         var perEntity: [Int: TimeInterval] = [:]
-        if created.isEmpty {
-            perEntity[usId] = buckets.values.reduce(0, +)
+        if !isStory || created.isEmpty {
+            perEntity[id] = total
         } else {
             let shared = buckets.filter { !created.contains($0.key) }.values.reduce(0, +)
             for i in created { perEntity[tasks[i].tpId] = (buckets[i] ?? 0) + shared / Double(created.count) }
         }
-        for (id, secs) in perEntity {
+        for (entity, secs) in perEntity {
             let h = (secs / 3600 * 100).rounded() / 100
             guard h > 0 else { continue }
             do {
-                _ = try await client.logTime(entityId: id, hours: h, description: "AI agent session — US#\(usId)",
+                _ = try await client.logTime(entityId: entity, hours: h, description: "AI agent session — \(kindLabel)#\(id)",
                                              date: Date(), tzOffsetMinutes: settings.tzOffsetMinutes)
-                info("Logged \(store.fmt(h)) to #\(id)")
-            } catch { append(.error, "Logging time to #\(id) failed: \((error as? TPError)?.message ?? error.localizedDescription)") }
+                info("Logged \(store.fmt(h)) to #\(entity)")
+            } catch { append(.error, "Logging time to #\(entity) failed: \((error as? TPError)?.message ?? error.localizedDescription)") }
         }
         await store.refresh()
     }
 
     // MARK: git
 
-    private func makeWorktree(_ repo: URL) async -> URL? {
-        let wt = repo.deletingLastPathComponent().appendingPathComponent("\(repo.lastPathComponent)-US-\(usId)")
-        if FileManager.default.fileExists(atPath: wt.path) { info("Reusing worktree \(wt.path)"); return wt }
-        info("Creating worktree \(wt.path) on \(branch)…")
-        _ = await Shell.run(["git", "fetch", "origin", baseBranch], cwd: repo)
-        var args = ["git", "worktree", "add"]
-        if await Shell.run(["git", "rev-parse", "--verify", "--quiet", branch], cwd: repo).code == 0 {
-            args += [wt.path, branch]
-        } else {
-            let hasRemote = await Shell.run(["git", "rev-parse", "--verify", "--quiet", "origin/\(baseBranch)"], cwd: repo).code == 0
-            args += ["--no-track", "-b", branch, wt.path, hasRemote ? "origin/\(baseBranch)" : baseBranch]
+    /// Make sure the work branch exists (creating the US branch from the base
+    /// and/or the task branch from the US branch as needed), then return a
+    /// worktree checked out on it — reusing any existing checkout of it.
+    private func prepareWorktree(_ repo: URL) async -> URL? {
+        info("Fetching origin…")
+        _ = await Shell.run(["git", "fetch", "origin"], cwd: repo)
+        if parentBranch == usBranch {
+            guard await ensureBranch(usBranch, from: baseBranch, repo) else { return nil }
         }
-        let r = await Shell.run(args, cwd: repo)
+        guard await ensureBranch(workBranch, from: parentBranch, repo) else { return nil }
+
+        if let existing = await worktreePath(for: workBranch, repo) {
+            info("Reusing \(existing.path) (on \(workBranch))")
+            return existing
+        }
+        let wt = repo.deletingLastPathComponent().appendingPathComponent(
+            "\(repo.lastPathComponent)-\(workBranch.replacingOccurrences(of: "/", with: "-"))")
+        let r = await Shell.run(["git", "worktree", "add", wt.path, workBranch], cwd: repo)
         guard r.code == 0 else { fail("git worktree failed: \(r.out)"); return nil }
+        info("Created worktree \(wt.path) on \(workBranch)")
         return wt
     }
 
-    /// Default branch of the repo at `path` (origin/HEAD, else current branch).
-    static func defaultBranch(of path: String) async -> String? {
-        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        let head = await Shell.run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd: url)
-        if head.code == 0 {
-            return head.out.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "origin/", with: "")
+    /// Create `branch` if missing: from its remote copy if someone pushed it,
+    /// else from `parent` (remote first, then local).
+    private func ensureBranch(_ branch: String, from parent: String, _ repo: URL) async -> Bool {
+        func exists(_ ref: String) async -> Bool {
+            await Shell.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd: repo).code == 0
         }
-        let cur = await Shell.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd: url)
-        return cur.code == 0 ? cur.out.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        if await exists("refs/heads/\(branch)") { return true }
+        let start: String
+        if await exists("refs/remotes/origin/\(branch)") { start = "origin/\(branch)" }
+        else if await exists("refs/heads/\(parent)") && parent == usBranch { start = parent }   // local US branch may be ahead
+        else if await exists("refs/remotes/origin/\(parent)") { start = "origin/\(parent)" }
+        else if await exists("refs/heads/\(parent)") { start = parent }
+        else { fail("Branch “\(parent)” not found locally or on origin"); return false }
+        let r = await Shell.run(["git", "branch", "--no-track", branch, start], cwd: repo)
+        guard r.code == 0 else { fail("Creating \(branch) failed: \(r.out)"); return false }
+        info("Created branch \(branch) from \(start)")
+        return true
+    }
+
+    private func worktreePath(for branch: String, _ repo: URL) async -> URL? {
+        var path: String?
+        for line in await Shell.run(["git", "worktree", "list", "--porcelain"], cwd: repo).out.split(separator: "\n") {
+            if line.hasPrefix("worktree ") { path = String(line.dropFirst("worktree ".count)) }
+            else if line == "branch refs/heads/\(branch)", let path { return URL(fileURLWithPath: path) }
+        }
+        return nil
     }
 
     // MARK: prompts
 
-    private var understandPrompt: String {
+    private static let commitRules = """
+        - Never push.
+        - Never add `Co-Authored-By` or any AI / Claude attribution to commit messages.
+        - Stay inside this directory. Build / run the tests if the project has them.
+        - If you are blocked or need a decision, ask and stop.
+        - When everything is done, print `@@DONE@@` followed by a short summary of the changes.
+        """
+
+    private var workspaceSection: String {
+        "## Workspace\nThe current directory is a git worktree of the project on branch `\(workBranch)` (from `\(parentBranch)`)."
+    }
+
+    private var storyPrompt: String {
         let desc = story?.description ?? ""
         return """
-        You are a software engineer working on TargetProcess User Story #\(usId): “\(usName)”.
+        You are a software engineer working on TargetProcess User Story #\(id): “\(name)”.
 
         ## User Story
         \(desc.isEmpty ? "(no description)" : desc)
 
-        ## Workspace
-        The current directory is a git worktree of the project on branch `\(branch)` (based on `\(baseBranch)`).
+        \(workspaceSection)
 
         ## Step 1 — understand (read-only)
         Explore the code relevant to this story. Do not modify any files yet.
@@ -472,7 +593,31 @@ final class AgentRun: ObservableObject, Identifiable {
         """
     }
 
-    private var codingPrompt: String {
+    private var itemPrompt: String {
+        let d = itemDetail
+        let usPart = usId != 0 ? " (part of User Story #\(usId): “\(usName)”)" : ""
+        let usSection = usId != 0
+            ? "\n## Parent User Story (context)\n\((d?.usDescription.isEmpty ?? true) ? "(no description)" : d!.usDescription)\n"
+            : ""
+        return """
+        You are a software engineer working on TargetProcess \(kindLabel) #\(id): “\(name)”\(usPart).
+
+        ## \(kindLabel)
+        \((d?.description.isEmpty ?? true) ? "(no description)" : d!.description)
+        \(usSection)
+        \(workspaceSection)
+
+        ## Step 1 — understand & plan (read-only)
+        Explore the code relevant to this \(kindLabel.lowercased()). Do not modify any files yet.
+        Then end your reply in exactly ONE of these two ways:
+        - If anything important is unclear, ask concise numbered questions and end with the line @@QUESTIONS@@.
+        - Otherwise, present a concise implementation plan (files, approach, tests) and end with the line @@PLAN_READY@@.
+        Do not start coding — wait for approval.
+        \(settings.agentInstructions)
+        """
+    }
+
+    private var storyCodingPrompt: String {
         let list = tasks.enumerated().map { "\($0.offset + 1). TP#\($0.element.tpId) — \($0.element.name): \($0.element.description)" }
             .joined(separator: "\n")
         return """
@@ -481,16 +626,32 @@ final class AgentRun: ObservableObject, Identifiable {
 
         Rules:
         - Before starting task n, print the line `@@TASK n@@` on its own.
-        - Commit after each task with `git commit -m "TP#<task id>: <title>"`. Never push.
-        - Stay inside this directory. Build / run the tests if the project has them.
-        - If you are blocked or need a decision, ask and stop.
-        - When all tasks are done, print `@@DONE@@` followed by a short summary of the changes.
+        - Commit after each task with `git commit -m "TP#<task id>: <title>"`.
+        \(Self.commitRules)
         """
     }
 
+    private var itemCodingPrompt: String {
+        """
+        The plan is approved. Implement it now.
+
+        Rules:
+        - Commit with `git commit -m "TP#\(id): <summary>"` (one or more commits).
+        \(Self.commitRules)
+        """
+    }
+
+    private var mrTitle: String {
+        isStory ? "US#\(id): \(name)" : "TP#\(id): \(name)"
+    }
+
     private var mrDescription: String {
+        var parts = [isStory ? "User Story: TP#\(id) — \(name)" : "\(kindLabel): TP#\(id) — \(name)"]
+        if !isStory && usId != 0 { parts.append("User Story: TP#\(usId) — \(usName)") }
         let list = tasks.filter { $0.tpId != 0 }.map { "- TP#\($0.tpId) \($0.name)" }.joined(separator: "\n")
-        return "User Story: TP#\(usId) — \(usName)\n\n## Tasks\n\(list)\n\n## Summary\n\(summary)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+        if !list.isEmpty { parts.append("## Tasks\n\(list)") }
+        if !summary.isEmpty { parts.append("## Summary\n\(summary)") }
+        return parts.joined(separator: "\n\n")
     }
 
     // MARK: helpers

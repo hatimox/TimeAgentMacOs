@@ -21,7 +21,7 @@ final class AppStore: ObservableObject {
 
     let watcher = MeetingWatcher()
     private(set) var client: TPClient?
-    /// Agent runs keyed by User Story id (one per US).
+    /// Agent runs keyed by TP id (User Story or Task/Bug).
     @Published var agentRuns: [Int: AgentRun] = [:]
     private var settingsObserver: AnyCancellable?
 
@@ -188,12 +188,18 @@ final class AppStore: ObservableObject {
         _ = try? await client.setEntityState(entityType: entityType, entityId: id, stateId: s.id)
     }
 
-    /// The agent run for a US, creating a fresh one if none exists or the last one ended.
-    func agentRun(usId: Int, usName: String, projectName: String) -> AgentRun {
-        if let r = agentRuns[usId], !r.isFinished { return r }
-        let r = AgentRun(store: self, usId: usId, usName: usName, projectName: projectName)
-        agentRuns[usId] = r
+    /// Agent runs keyed by TP id (a US or a Task/Bug) — a fresh one if none
+    /// exists or the last one ended.
+    func agentRun(for target: AgentTarget) -> AgentRun {
+        if let r = agentRuns[target.id], !r.isFinished { return r }
+        let r = AgentRun(store: self, target: target)
+        agentRuns[target.id] = r
         return r
+    }
+
+    /// True while an agent run on this TP id is past setup and not finished.
+    func agentActive(_ id: Int) -> Bool {
+        agentRuns[id].map { !$0.isFinished && $0.phase != .setup } ?? false
     }
 
     // MARK: meeting end + recurring

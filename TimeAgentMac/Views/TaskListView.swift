@@ -209,11 +209,10 @@ struct TaskListView: View {
                     .font(.caption.monospacedDigit()).foregroundStyle(.green)
             }
             if g.id != 0 {
-                let running = store.agentRuns[g.id].map { !$0.isFinished && $0.phase != .setup } ?? false
                 Button {
-                    AppDelegate.shared?.openAgent(usId: g.id, usName: g.name, projectName: g.items[0].projectName)
+                    AppDelegate.shared?.openAgent(.story(id: g.id, name: g.name, projectName: g.items[0].projectName))
                 } label: {
-                    Label(running ? "Agent running" : "Run agent", systemImage: "sparkles").font(.caption)
+                    Label(store.agentActive(g.id) ? "Agent running" : "Run agent", systemImage: "sparkles").font(.caption)
                 }
                 .buttonStyle(.bordered).controlSize(.small).tint(.purple)
             }
@@ -355,6 +354,7 @@ struct ItemRow: View {
                 .foregroundStyle(.white).clipShape(Capsule())
             Text(item.name).fontWeight(.medium).lineLimit(1)
             Spacer()
+            agentButton
             trackButton
             if loggedHours > 0 {
                 Button { showSlots.toggle() } label: {
@@ -364,6 +364,13 @@ struct ItemRow: View {
                 .buttonStyle(.bordered).controlSize(.small).tint(.green)
             }
         }
+    }
+
+    private var agentButton: some View {
+        Button { AppDelegate.shared?.openAgent(.item(item)) } label: {
+            Label(store.agentActive(item.id) ? "Agent running" : "Agent", systemImage: "sparkles").font(.caption)
+        }
+        .buttonStyle(.bordered).controlSize(.small).tint(.purple)
     }
 
     private var trackButton: some View {
@@ -378,8 +385,9 @@ struct ItemRow: View {
         }
         .buttonStyle(.borderedProminent).controlSize(.small)
         .tint(active ? .red : .accentColor)
-        // Disable starting a different task while one is already running.
-        .disabled(store.isTracking && !active)
+        // Disable starting a different task while one is already running, and
+        // manual tracking while an agent run is timing this task.
+        .disabled((store.isTracking && !active) || (!active && store.agentActive(item.id)))
     }
 
     private var metaRow: some View {

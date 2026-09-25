@@ -167,6 +167,16 @@ final class TPClient {
                              processId: (project["Process"] as? [String: Any])?["Id"] as? Int ?? 0)
     }
 
+    struct ItemDetail { let description: String; let usDescription: String }
+
+    /// A Task/Bug's description plus its parent US description (agent context).
+    func fetchItemDetail(entityType: String, id: Int) async throws -> ItemDetail {
+        let it = try await get("\(entityType)/\(id)", ["include": "[Id,Description,UserStory[Id,Description]]"])
+        let us = it["UserStory"] as? [String: Any] ?? [:]
+        return ItemDetail(description: Self.plainText(it["Description"] as? String ?? ""),
+                          usDescription: Self.plainText(us["Description"] as? String ?? ""))
+    }
+
     /// Create a Task under a User Story and (best-effort) assign it to me.
     func createTask(usId: Int, projectId: Int, name: String, description: String) async throws -> Int {
         let resp = try await post("Tasks", ["Name": name, "Description": description,
