@@ -126,9 +126,9 @@ final class TPClient {
     }
 
     func fetchProcessStates(processId: Int) async throws -> [String: [WorkflowState]] {
-        var out: [String: [WorkflowState]] = ["Task": [], "Bug": []]
+        var out: [String: [WorkflowState]] = ["Task": [], "Bug": [], "UserStory": []]
         guard processId != 0 else { return out }
-        for etype in ["Task", "Bug"] {
+        for etype in ["Task", "Bug", "UserStory"] {
             guard let obj = try? await get("EntityStates", [
                 "where": "(Process.Id eq \(processId)) and (EntityType.Name eq '\(etype)')",
                 "include": "[Id,Name,NumericPriority,IsFinal]", "take": "200",
@@ -148,6 +148,55 @@ final class TPClient {
         let resp = try await post("\(entityType)/\(entityId)", ["EntityState": ["Id": stateId]])
         let es = resp["EntityState"] as? [String: Any] ?? [:]
         return (es["Name"] as? String ?? "?", es["IsFinal"] as? Bool ?? false)
+    }
+
+    // MARK: - user stories (agent)
+
+    struct UserStoryInfo {
+        let id: Int; let name: String; let description: String
+        let projectId: Int; let projectName: String; let processId: Int
+    }
+
+    func fetchUserStory(id: Int) async throws -> UserStoryInfo {
+        let us = try await get("UserStories/\(id)", ["include": "[Id,Name,Description,Project[Id,Name,Process[Id]]]"])
+        let project = us["Project"] as? [String: Any] ?? [:]
+        return UserStoryInfo(id: id, name: us["Name"] as? String ?? "",
+                             description: Self.plainText(us["Description"] as? String ?? ""),
+                             projectId: project["Id"] as? Int ?? 0,
+                             projectName: project["Name"] as? String ?? "",
+                             processId: (project["Process"] as? [String: Any])?["Id"] as? Int ?? 0)
+    }
+
+    /// Create a Task under a User Story and (best-effort) assign it to me.
+    func createTask(usId: Int, projectId: Int, name: String, description: String) async throws -> Int {
+        let resp = try await post("Tasks", ["Name": name, "Description": description,
+                                            "UserStory": ["Id": usId], "Project": ["Id": projectId]])
+        guard let id = resp["Id"] as? Int else { throw TPError(message: "Task not created") }
+        try? await assignToMe(id)
+        return id
+    }
+
+    private var developerRoleId: Int?
+    private func assignToMe(_ assignableId: Int) async throws {
+        if developerRoleId == nil {
+            let roles = try await get("Roles", ["where": "Name eq 'Developer'", "take": "1"])
+            developerRoleId = (roles["Items"] as? [[String: Any]])?.first?["Id"] as? Int
+        }
+        guard let role = developerRoleId else { return }
+        _ = try await post("Assignments", ["Assignable": ["Id": assignableId],
+                                           "GeneralUser": ["Id": myUserId], "Role": ["Id": role]])
+    }
+
+    /// TP descriptions are HTML; flatten to readable text for the agent prompt.
+    static func plainText(_ html: String) -> String {
+        var s = html.replacingOccurrences(of: "<(br|/p|/div|/li|/h[1-6])[^>]*>", with: "\n", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<li[^>]*>", with: "- ", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        for (e, c) in ["&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#39;": "'"] {
+            s = s.replacingOccurrences(of: e, with: c)
+        }
+        return s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - times

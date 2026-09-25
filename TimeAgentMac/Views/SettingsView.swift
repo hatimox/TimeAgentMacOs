@@ -18,6 +18,7 @@ struct SettingsView: View {
             meetings.tabItem { Label("Meetings", systemImage: "video") }
             recurring.tabItem { Label("Recurring", systemImage: "repeat") }
             daysOff.tabItem { Label("Days off", systemImage: "calendar") }
+            agent.tabItem { Label("Agent", systemImage: "sparkles") }
         }
         .frame(width: 500, height: 470).padding()
         .onAppear { url = store.settings.tpURL; token = store.settings.token }
@@ -229,6 +230,52 @@ struct SettingsView: View {
 
                 saveButton { store.settings.save() }
                 Spacer(minLength: 0)
+            }
+            .padding(20)
+        }
+    }
+
+    // MARK: Agent
+
+    private var agent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                groupCard("Claude Code") {
+                    labeledField("CLI path") {
+                        TextField(Shell.which("claude") ?? "not found — set a path", text: $store.settings.agentClaudePath)
+                            .textFieldStyle(.roundedBorder).frame(width: 260)
+                    }
+                    labeledField("Model") {
+                        Picker("", selection: $store.settings.agentModel) {
+                            Text("Sonnet (recommended)").tag("sonnet")
+                            Text("Haiku").tag("haiku")
+                            Text("Opus").tag("opus")
+                        }.labelsHidden().frame(width: 200)
+                    }
+                    Text("Uses your logged-in Claude Code CLI — no API key needed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                groupCard("Permissions") {
+                    TextField("Extra allowed tools, comma-separated", text: $store.settings.agentExtraTools,
+                              prompt: Text("Bash(npm test:*), Bash(make:*)"))
+                        .textFieldStyle(.roundedBorder)
+                    Text("Edits and git add/commit are always allowed inside the worktree; git push is blocked (the app pushes).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                groupCard("GitLab merge requests") {
+                    labeledField("Reviewers") {
+                        TextField("alice, bob", text: $store.settings.mrReviewers)
+                            .textFieldStyle(.roundedBorder).frame(width: 260)
+                    }
+                    Text(Shell.which("glab") != nil ? "glab found." : "glab not found — install with `brew install glab` and run `glab auth login`. Without it the branch is still pushed.")
+                        .font(.caption).foregroundStyle(Shell.which("glab") != nil ? Color.green : Color.orange)
+                }
+                groupCard("Extra instructions for the agent") {
+                    TextEditor(text: $store.settings.agentInstructions)
+                        .font(.callout).frame(height: 70)
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                }
+                saveButton { store.settings.save() }
             }
             .padding(20)
         }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The main window: searchable/filterable task & bug list with per-item state
-/// change, parent-US link, hours total, and direct time logging.
+/// change, collapsible parent-US grouping, hours total, and direct time logging.
 enum TaskSort: String, CaseIterable, Identifiable {
     case name = "Name A–Z"
     case idDesc = "Newest (#id ↓)"
@@ -24,6 +24,8 @@ struct TaskListView: View {
     @State private var sprintFilter = kSprintCurrent
     @State private var sortBy: TaskSort = .name
     @State private var monthOffset = 0
+    /// Expanded US group ids, persisted as a comma list; groups start collapsed.
+    @AppStorage("expandedUS") private var expandedRaw = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,6 +93,12 @@ struct TaskListView: View {
                     ForEach(TaskSort.allCases) { Text($0.rawValue).tag($0) }
                 }
                 Spacer()
+                Button { expanded = Set(groups.map(\.id)) } label: {
+                    Label("Expand all", systemImage: "chevron.down.2")
+                }
+                Button { expanded = [] } label: {
+                    Label("Collapse all", systemImage: "chevron.up.2")
+                }
             }
         }
         .padding(10)
@@ -130,10 +138,93 @@ struct TaskListView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(filtered) { item in ItemRow(item: item) }
+                    ForEach(groups) { g in
+                        groupHeader(g)
+                        if isExpanded(g) {
+                            ForEach(g.items) { item in ItemRow(item: item).padding(.leading, 14) }
+                        }
+                    }
                 }
                 .padding(10)
             }
+        }
+    }
+
+    // MARK: US grouping
+
+    private struct USGroup: Identifiable {
+        let id: Int                 // US id; 0 = no user story
+        let name: String
+        let items: [WorkItem]
+        let hours: Double
+    }
+
+    /// Filtered items bucketed by parent US. Items keep the chosen sort order;
+    /// groups are ordered by US name (or total hours for the hours sort), with
+    /// the "No User Story" bucket last.
+    private var groups: [USGroup] {
+        let list = filtered
+        var order: [Int] = []
+        var buckets: [Int: [WorkItem]] = [:]
+        for it in list {
+            if buckets[it.usId] == nil { order.append(it.usId) }
+            buckets[it.usId, default: []].append(it)
+        }
+        let gs = order.map { id -> USGroup in
+            let items = buckets[id]!
+            return USGroup(id: id, name: id == 0 ? "No User Story" : items[0].usName,
+                           items: items, hours: items.reduce(0) { $0 + store.hours(for: $1.id) })
+        }
+        return gs.sorted { a, b in
+            if (a.id == 0) != (b.id == 0) { return b.id == 0 }
+            if sortBy == .hours && a.hours != b.hours { return a.hours > b.hours }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    private var expanded: Set<Int> {
+        get { Set(expandedRaw.split(separator: ",").compactMap { Int($0) }) }
+        nonmutating set { expandedRaw = newValue.sorted().map(String.init).joined(separator: ",") }
+    }
+
+    /// An active search expands everything so matches aren't hidden.
+    private func isExpanded(_ g: USGroup) -> Bool { !search.isEmpty || expanded.contains(g.id) }
+
+    private func groupHeader(_ g: USGroup) -> some View {
+        let open = isExpanded(g)
+        return HStack(spacing: 8) {
+            Image(systemName: open ? "chevron.down" : "chevron.right")
+                .font(.caption.bold()).foregroundStyle(.secondary).frame(width: 12)
+            if g.id != 0 {
+                Button("US #\(g.id)") { store.openInTP(g.id) }
+                    .buttonStyle(.link).font(.caption.monospacedDigit())
+            }
+            Text(g.name).fontWeight(.semibold).lineLimit(1)
+            Text("\(g.items.count)").font(.caption2.bold())
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(.quaternary, in: Capsule())
+            Spacer()
+            if g.hours > 0 {
+                Label(store.fmt(g.hours), systemImage: "clock")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.green)
+            }
+            if g.id != 0 {
+                let running = store.agentRuns[g.id].map { !$0.isFinished && $0.phase != .setup } ?? false
+                Button {
+                    AppDelegate.shared?.openAgent(usId: g.id, usName: g.name, projectName: g.items[0].projectName)
+                } label: {
+                    Label(running ? "Agent running" : "Run agent", systemImage: "sparkles").font(.caption)
+                }
+                .buttonStyle(.bordered).controlSize(.small).tint(.purple)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            var e = expanded
+            if e.contains(g.id) { e.remove(g.id) } else { e.insert(g.id) }
+            expanded = e
         }
     }
 
@@ -295,10 +386,6 @@ struct ItemRow: View {
         HStack(spacing: 10) {
             Button("#\(item.id)") { store.openInTP(item.id) }
                 .buttonStyle(.link).font(.caption.monospacedDigit())
-            if item.usId != 0 {
-                Button("US #\(item.usId)") { store.openInTP(item.usId) }
-                    .buttonStyle(.link).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
             statePicker
             Spacer()
             Label(item.projectName, systemImage: "folder")

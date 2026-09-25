@@ -20,7 +20,9 @@ final class AppStore: ObservableObject {
     private var trackingStart: Date?
 
     let watcher = MeetingWatcher()
-    private var client: TPClient?
+    private(set) var client: TPClient?
+    /// Agent runs keyed by User Story id (one per US).
+    @Published var agentRuns: [Int: AgentRun] = [:]
     private var settingsObserver: AnyCancellable?
 
     init() {
@@ -170,6 +172,28 @@ final class AppStore: ObservableObject {
             }
             status = "#\(item.id) → \(r.name)"
         } catch { status = "Status change failed: \(msg(error))" }
+    }
+
+    /// Best-effort move of any entity to the first workflow state whose name
+    /// contains `matching` (e.g. "progress", "review"). Silently no-ops if the
+    /// process has no such state.
+    func moveState(entityType: String, stateKey: String, id: Int, processId: Int, matching: String) async {
+        guard let client, processId != 0 else { return }
+        if statesByProcess[processId]?[stateKey]?.isEmpty ?? true,
+           let fetched = try? await client.fetchProcessStates(processId: processId) {
+            statesByProcess[processId] = fetched
+        }
+        guard let s = statesByProcess[processId]?[stateKey]?.first(where: { $0.name.lowercased().contains(matching) })
+        else { return }
+        _ = try? await client.setEntityState(entityType: entityType, entityId: id, stateId: s.id)
+    }
+
+    /// The agent run for a US, creating a fresh one if none exists or the last one ended.
+    func agentRun(usId: Int, usName: String, projectName: String) -> AgentRun {
+        if let r = agentRuns[usId], !r.isFinished { return r }
+        let r = AgentRun(store: self, usId: usId, usName: usName, projectName: projectName)
+        agentRuns[usId] = r
+        return r
     }
 
     // MARK: meeting end + recurring
