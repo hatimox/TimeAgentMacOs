@@ -354,17 +354,14 @@ struct SettingsView: View {
                 }
 
                 Section("Religious holidays (estimates — confirm/adjust)") {
-                    let slots = Holidays.religiousHolidays(holYear)
-                    if slots.isEmpty {
+                    let days = Holidays.religiousDays(holYear)
+                    if days.isEmpty {
                         Text("No estimates for \(holYear). Add specific days off above.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach(Array(slots.enumerated()), id: \.offset) { _, entry in
-                        ForEach(Array(entry.dates.enumerated()), id: \.offset) { i, estimate in
-                            religiousRow(name: entry.name, multi: entry.dates.count > 1,
-                                         dayIdx: i, estimate: estimate)
-                        }
-                    }
+                    // One flat list keyed by the slot key: nested ForEach with
+                    // offset ids collided across holidays and repeated rows.
+                    ForEach(days, id: \.key) { d in religiousRow(d) }
                 }
             }
 
@@ -375,14 +372,14 @@ struct SettingsView: View {
 
     /// One editable religious-holiday day. Identified by a stable slot key
     /// (year|name|idx) so a user's edit/toggle persists across reloads.
-    private func religiousRow(name: String, multi: Bool, dayIdx: Int, estimate: String) -> some View {
-        let key = "\(holYear)|\(name)|\(dayIdx)"
-        return HStack {
-            Toggle("", isOn: religiousOnBinding(key: key, estimate: estimate)).labelsHidden()
-            Text(name + (multi ? " (day \(dayIdx + 1))" : ""))
+    private func religiousRow(_ d: Holidays.ReligiousDay) -> some View {
+        HStack {
+            Toggle("", isOn: religiousOnBinding(key: d.key, estimate: d.estimate)).labelsHidden()
+            Text(d.label)
             Spacer()
-            TextField("YYYY-MM-DD", text: religiousDateBinding(key: key, estimate: estimate))
-                .frame(width: 120)
+            TextField("", text: religiousDateBinding(key: d.key, estimate: d.estimate),
+                      prompt: Text("YYYY-MM-DD"))
+                .labelsHidden().font(.body.monospacedDigit()).frame(width: 110)
         }
     }
 

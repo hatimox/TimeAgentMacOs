@@ -6,15 +6,22 @@ import Foundation
 /// `recurring_logged.json` ledger keyed by "date|taskId" so it never
 /// double-logs across restarts.
 enum RecurringLogger {
-    /// Combined set of days off for a year: user-added + confirmed religious +
-    /// (when region is Morocco) the fixed civil holidays.
+    /// Combined set of days off for a year: user-added + (when region is
+    /// Morocco) the fixed civil holidays and religious holidays. A religious
+    /// estimate counts as on unless switched off; an edited date replaces it.
     static func allDaysOff(year: Int, settings: Settings) -> Set<String> {
         var out = Set(settings.daysOff)
-        for slot in settings.religiousSlots where slot.on && !slot.date.isEmpty {
-            out.insert(slot.date)
-        }
+        let slots = Dictionary(settings.religiousSlots.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         if settings.region == "morocco" {
             for d in Holidays.fixedHolidays(year) { out.insert(d) }
+            for d in Holidays.religiousDays(year) {
+                let s = slots[d.key]
+                let date = s?.date.isEmpty == false ? s!.date : d.estimate
+                if s?.on ?? true { out.insert(date) }
+            }
+        } else {
+            // Outside Morocco only explicitly confirmed slots apply (as before).
+            for slot in settings.religiousSlots where slot.on && !slot.date.isEmpty { out.insert(slot.date) }
         }
         return out
     }
