@@ -61,6 +61,25 @@ enum Holidays {
         religious[year] ?? []
     }
 
+    /// One religious-holiday day: its stable settings slot key ("year|name|idx"),
+    /// display label and estimated date.
+    struct ReligiousDay {
+        let key: String
+        let label: String
+        let estimate: String
+    }
+
+    /// Every estimated religious-holiday day of a year, flattened in order.
+    static func religiousDays(_ year: Int) -> [ReligiousDay] {
+        religiousHolidays(year).flatMap { h in
+            h.dates.enumerated().map { i, date in
+                ReligiousDay(key: "\(year)|\(h.name)|\(i)",
+                             label: h.name + (h.dates.count > 1 ? " (day \(i + 1))" : ""),
+                             estimate: date)
+            }
+        }
+    }
+
     /// All years we have religious estimates for, sorted.
     static func religiousYears() -> [Int] {
         religious.keys.sorted()
