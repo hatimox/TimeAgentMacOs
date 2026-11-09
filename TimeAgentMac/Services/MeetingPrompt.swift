@@ -36,19 +36,36 @@ enum MeetingPrompt {
         let idx = resp.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         let action = (idx >= 0 && idx < actions.count) ? actions[idx] : "cancel"
 
+        let required = store.settings.timeDescriptionRequired
+        // Each path stays in LogPrompt until the entry saves or is discarded.
+        let save: (Int) -> (Double, String) async -> String? = { taskId in
+            { h, d in await store.logTime(entityId: taskId, hours: h, description: d, date: start) }
+        }
         switch action {
         case "daily":
-            await store.logTime(entityId: store.settings.dailyTaskId, hours: hours, description: "", date: start)
+            let taskId = store.settings.dailyTaskId
+            var firstError: String?
+            if !required {
+                firstError = await save(taskId)(hours, "")
+                if firstError == nil { return }
+            }
+            await LogPrompt.run(store: store, title: "Daily · meeting \(win)", hours: hours,
+                                description: "Daily", error: firstError, save: save(taskId))
         case "choose":
             if let pick = TaskPicker.run(items: store.items.filter { !$0.isFinal },
                                          defaultId: store.settings.meetingsTaskId) {
-                let desc = TextPrompt.run(title: "Meeting \(win)", message: "Description (optional)")
-                if let desc { await store.logTime(entityId: pick, hours: hours, description: desc, date: start) }
+                await LogPrompt.run(store: store, title: "Meeting \(win)", hours: hours,
+                                    description: "", save: save(pick))
+            } else {
+                store.status = "Meeting \(win) ignored"
             }
         case "defined":
             if let m = DefinedPicker.run(meetings: store.settings.dynamicMeetings) {
-                let desc = TextPrompt.run(title: m.name, message: "Description (editable)", initial: m.description)
-                if let desc { await store.logTime(entityId: m.taskId, hours: hours, description: desc, date: start) }
+                await LogPrompt.run(store: store, title: m.name, hours: hours,
+                                    description: m.description.isEmpty ? m.name : m.description,
+                                    save: save(m.taskId))
+            } else {
+                store.status = "Meeting \(win) ignored"
             }
         default:
             store.status = "Meeting \(win) ignored"
@@ -56,18 +73,61 @@ enum MeetingPrompt {
     }
 }
 
-/// Simple text input via NSAlert + accessory field. Returns nil if cancelled.
+/// Hours + description form for one time entry. Stays open — showing TP's
+/// error and keeping what was typed — until `save` succeeds (returns nil) or
+/// the user confirms discarding the time.
 @MainActor
-enum TextPrompt {
-    static func run(title: String, message: String, initial: String = "") -> String? {
-        let a = NSAlert(); a.messageText = title; a.informativeText = message
-        a.addButton(withTitle: "Save"); a.addButton(withTitle: "Skip")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = initial
-        a.accessoryView = field
-        NSApp.activate(ignoringOtherApps: true)
-        a.window.initialFirstResponder = field
-        return a.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+enum LogPrompt {
+    static func run(store: AppStore, title: String, hours: Double, description: String,
+                    error: String? = nil, save: (Double, String) async -> String?) async {
+        var hoursText = String(format: "%.2f", hours)
+        var desc = description
+        var lastError = error
+        while true {
+            let required = store.settings.timeDescriptionRequired
+            let a = NSAlert()
+            a.messageText = title
+            a.informativeText = (lastError.map { "⚠️ \($0)\n\n" } ?? "")
+                + (required ? "Hours and description (required)." : "Hours and description (optional).")
+            if lastError != nil { a.alertStyle = .warning }
+            a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
+
+            let hoursField = NSTextField(frame: NSRect(x: 0, y: 32, width: 90, height: 24))
+            hoursField.stringValue = hoursText; hoursField.alignment = .right
+            let descField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            descField.stringValue = desc
+            descField.placeholderString = required ? "Description (required)" : "Description"
+            let box = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 56))
+            box.addSubview(hoursField); box.addSubview(descField)
+            a.accessoryView = box
+            NSApp.activate(ignoringOtherApps: true)
+            a.window.initialFirstResponder = descField
+
+            let resp = a.runModal()
+            hoursText = hoursField.stringValue
+            desc = descField.stringValue
+            if resp != .alertFirstButtonReturn {
+                if confirmDiscard(hoursText) { store.status = "Not logged: \(title)"; return }
+                continue
+            }
+            guard let h = Double(hoursText.trimmingCharacters(in: .whitespaces)
+                                    .replacingOccurrences(of: ",", with: ".")), h > 0 else {
+                lastError = "Enter hours greater than 0."; continue
+            }
+            if required && desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lastError = "A description is required."; continue
+            }
+            lastError = await save(h, desc)
+            if lastError == nil { return }
+        }
+    }
+
+    private static func confirmDiscard(_ hours: String) -> Bool {
+        let a = NSAlert()
+        a.messageText = "Discard this time entry?"
+        a.informativeText = "\(hours) h will not be logged to TargetProcess."
+        a.addButton(withTitle: "Keep editing"); a.addButton(withTitle: "Discard")
+        return a.runModal() == .alertSecondButtonReturn
     }
 }
 

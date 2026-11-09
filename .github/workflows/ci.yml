@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: macos-14   # Apple Silicon runner; Xcode 15+, supports universal builds
+    runs-on: macos-15   # Apple Silicon runner; Xcode 16+, supports universal builds
     steps:
       - uses: actions/checkout@v4
 

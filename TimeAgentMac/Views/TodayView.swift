@@ -1,30 +1,39 @@
 import SwiftUI
 import AppKit
 
-/// Full breakdown of every time entry logged today, across all tasks —
-/// editable/deletable inline, same as the per-task entry list.
+/// Full breakdown of every time entry logged on one day (today by default),
+/// across all tasks — editable/deletable inline, with ‹ › to browse days.
 struct TodayView: View {
     @EnvironmentObject var store: AppStore
 
-    private var todayStr: String { Totals.todayString(offsetMinutes: store.settings.tzOffsetMinutes) }
+    private var offset: Int { store.viewDayOffset }
+    private var dayStr: String { Totals.dayString(offset: offset, offsetMinutes: store.settings.tzOffsetMinutes) }
     private var entries: [TimeEntry] {
-        store.times.filter { $0.day == todayStr }.sorted { $0.id > $1.id }
+        store.times.filter { $0.day == dayStr }.sorted { $0.id > $1.id }
     }
     private var total: Double { entries.reduce(0) { $0 + $1.hours } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Today").font(.title2.bold())
+            HStack(spacing: 6) {
+                Button { store.viewDayOffset -= 1 } label: { Image(systemName: "chevron.left") }
+                    .help("Previous day")
+                Button { if offset < 0 { store.viewDayOffset += 1 } } label: { Image(systemName: "chevron.right") }
+                    .disabled(offset >= 0).help("Next day")
+                Text(Totals.longDayLabel(offset: offset, offsetMinutes: store.settings.tzOffsetMinutes))
+                    .font(.title2.bold()).lineLimit(1)
+                if offset != 0 {
+                    Button("Today") { store.viewDayOffset = 0 }.controlSize(.small)
+                }
                 Spacer()
                 Text(store.fmt(total)).font(.title2.monospacedDigit().bold()).foregroundStyle(.orange)
             }
             if entries.isEmpty {
                 Spacer()
-                Text("No time logged today").foregroundStyle(.secondary)
+                Text(offset == 0 ? "No time logged today" : "No time logged on this day").foregroundStyle(.secondary)
                 Spacer()
             } else {
-                List(entries) { TodayEntryRow(entry: $0, itemName: name(for: $0.itemId)) }
+                List(entries) { TodayEntryRow(entry: $0, itemName: name(for: $0.itemId)).id($0) }
                     .listStyle(.inset)
             }
         }

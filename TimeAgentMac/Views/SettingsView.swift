@@ -108,6 +108,11 @@ struct SettingsView: View {
                     Text("Rounds up to the minimum, then in step increments.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                groupCard("Time entries") {
+                    Toggle("Description required", isOn: $store.settings.timeDescriptionRequired)
+                    Text("Turns on automatically when TargetProcess rejects a time entry without a description.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 groupCard("Dynamic meeting shortcuts") {
                     if store.settings.dynamicMeetings.isEmpty {
                         Text("No shortcuts yet.").font(.callout).foregroundStyle(.secondary)
