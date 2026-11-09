@@ -1,11 +1,12 @@
 import Foundation
 
-/// A Task or Bug assigned to me, plus its parent User Story.
+/// A Task, Bug or User Story assigned to me, plus its parent User Story
+/// (a story is its own parent, so it groups with its tasks).
 struct WorkItem: Identifiable, Hashable {
     let id: Int
     var name: String
-    var entityType: String          // "Tasks" | "Bugs"
-    var displayType: String         // "Task" | "Bug"
+    var entityType: String          // "Tasks" | "Bugs" | "UserStories"
+    var displayType: String         // "Task" | "Bug" | "User Story"
     var stateId: Int
     var stateName: String
     var isFinal: Bool
@@ -14,6 +15,19 @@ struct WorkItem: Identifiable, Hashable {
     var sprint: String
     var usId: Int
     var usName: String
+
+    var isStory: Bool { entityType == "UserStories" }
+    var isBug: Bool { entityType == "Bugs" }
+    /// Key into the per-process workflow-state map.
+    var stateKey: String { isStory ? "UserStory" : isBug ? "Bug" : "Task" }
+
+    static func displayType(for collection: String) -> String {
+        switch collection {
+        case "Bugs": return "Bug"
+        case "UserStories": return "User Story"
+        default: return "Task"
+        }
+    }
 }
 
 /// One TP time entry of mine.

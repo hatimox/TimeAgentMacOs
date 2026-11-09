@@ -13,6 +13,8 @@ final class AppStore: ObservableObject {
     @Published var status = ""
     @Published var scopeAll = false       // false = current sprint only
     @Published var loading = false
+    /// Day shown in the Today window (0 = today, -1 = yesterday…).
+    @Published var viewDayOffset = 0
 
     /// Manual per-task stopwatch (one at a time): the item id being tracked and
     /// when it started. Nil when nothing is running.
@@ -98,20 +100,24 @@ final class AppStore: ObservableObject {
 
     /// Stop the running timer and log the elapsed time to its task (rounded to
     /// 2dp; nothing logged if it rounds to zero).
+    /// When a description is required, or the save fails, a prompt (prefilled
+    /// with the task name) stays up until it saves or is explicitly discarded.
     func stopTracking() async {
         guard let id = trackingId, let start = trackingStart else { return }
         trackingId = nil; trackingStart = nil
         let hours = (Date().timeIntervalSince(start) / 3600 * 100).rounded() / 100   // 2dp
         guard hours > 0 else { status = "Too short — nothing logged"; return }
         let name = items.first { $0.id == id }?.name ?? "#\(id)"
-        guard let client else { status = "Not configured"; return }
-        status = "Logging…"
-        do {
-            _ = try await client.logTime(entityId: id, hours: hours, description: "",
-                                         date: Date(), tzOffsetMinutes: settings.tzOffsetMinutes)
-            status = "Logged \(fmt(hours)) to “\(name)”"
-            await refresh()
-        } catch { status = "Log failed: \(msg(error))" }
+        let now = Date()
+        var firstError: String?
+        if !settings.timeDescriptionRequired {
+            firstError = await logTime(entityId: id, hours: hours, description: "", date: now)
+            if firstError == nil { return }
+        }
+        await LogPrompt.run(store: self, title: "Log \(fmt(hours)) to “\(name)”", hours: hours,
+                            description: name, error: firstError) { h, d in
+            await self.logTime(entityId: id, hours: h, description: d, date: now)
+        }
     }
 
     /// Seconds elapsed on the running timer (0 if none).
@@ -122,15 +128,40 @@ final class AppStore: ObservableObject {
 
     // MARK: time logging
 
-    func logTime(entityId: Int, hours: Double, description: String, date: Date) async {
-        guard let client else { status = "Not configured"; return }
+    /// Log a time entry. Returns nil on success, or the error to show — callers
+    /// keep their form open until this returns nil.
+    @discardableResult
+    func logTime(entityId: Int, hours: Double, description: String, date: Date) async -> String? {
+        guard let client else { status = "Not configured"; return "TargetProcess is not configured" }
+        let desc = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.timeDescriptionRequired && desc.isEmpty { return Self.descriptionRequiredMessage }
         status = "Logging…"
         do {
-            _ = try await client.logTime(entityId: entityId, hours: hours, description: description,
+            _ = try await client.logTime(entityId: entityId, hours: hours, description: desc,
                                          date: date, tzOffsetMinutes: settings.tzOffsetMinutes)
             status = "Logged \(fmt(hours)) to #\(entityId)"
             await refresh()
-        } catch { status = "Log failed: \(msg(error))" }
+            return nil
+        } catch {
+            let m = noteDescriptionRequirement(error) ? Self.descriptionRequiredMessage : msg(error)
+            status = "Log failed: \(m)"
+            return m
+        }
+    }
+
+    static let descriptionRequiredMessage = "TargetProcess requires a description for time entries."
+
+    /// If TP rejected a time entry for a missing description, remember that
+    /// (so every form asks for one from now on) and return true.
+    @discardableResult
+    func noteDescriptionRequirement(_ error: Error) -> Bool {
+        guard let e = error as? TPError, e.status == 400,
+              e.message.range(of: "description", options: .caseInsensitive) != nil else { return false }
+        if !settings.timeDescriptionRequired {
+            settings.timeDescriptionRequired = true
+            settings.save()
+        }
+        return true
     }
 
     func updateTime(_ entry: TimeEntry, hours: Double, description: String, dayISO: String) async {
@@ -140,7 +171,9 @@ final class AppStore: ObservableObject {
             try await client.updateTime(timeId: entry.id, hours: hours, description: description,
                                         date: date, tzOffsetMinutes: settings.tzOffsetMinutes)
             status = "Time entry updated"; await refresh()
-        } catch { status = "Save failed: \(msg(error))" }
+        } catch {
+            status = "Save failed: \(noteDescriptionRequirement(error) ? Self.descriptionRequiredMessage : msg(error))"
+        }
     }
 
     func deleteTime(_ entry: TimeEntry) async {
@@ -154,11 +187,11 @@ final class AppStore: ObservableObject {
     func states(for item: WorkItem) async -> [WorkflowState] {
         guard let client else { return [] }
         if let cached = statesByProcess[item.processId] {
-            return (item.entityType == "Bugs" ? cached["Bug"] : cached["Task"]) ?? []
+            return cached[item.stateKey] ?? []
         }
         if let fetched = try? await client.fetchProcessStates(processId: item.processId) {
             statesByProcess[item.processId] = fetched
-            return (item.entityType == "Bugs" ? fetched["Bug"] : fetched["Task"]) ?? []
+            return fetched[item.stateKey] ?? []
         }
         return []
     }
@@ -231,15 +264,19 @@ final class AppStore: ObservableObject {
             guard entry.taskId != 0, entry.hours > 0 else { continue }
             let key = "\(today)|\(entry.taskId)"
             if ledger.contains(key) { continue }
+            // TP may require a description: use the label, else the task name.
+            let desc = entry.label.isEmpty
+                ? (items.first { $0.id == entry.taskId }?.name ?? "Recurring time") : entry.label
             do {
                 _ = try await client.logTime(entityId: entry.taskId, hours: entry.hours,
-                                             description: entry.label, date: now, tzOffsetMinutes: off)
+                                             description: desc, date: now, tzOffsetMinutes: off)
                 ledger.insert(key)
                 RecurringLogger.saveLedger(ledger)
                 anyLogged = true
                 let title = entry.label.isEmpty ? "#\(entry.taskId)" : "“\(entry.label)”"
                 status = "Auto-logged \(fmt(entry.hours)) \(title)"
             } catch {
+                noteDescriptionRequirement(error)
                 status = "Recurring log failed: \(msg(error))"
             }
         }

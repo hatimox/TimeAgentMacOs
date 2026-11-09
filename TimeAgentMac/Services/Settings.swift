@@ -13,6 +13,9 @@ final class Settings: ObservableObject {
     @Published var meetingsTaskId: Int = 0
     @Published var meetingMinMinutes: Int = 30
     @Published var meetingStepMinutes: Int = 15
+    /// TargetProcess rejects time entries without a description. Learned from
+    /// the first such rejection; can also be set by hand in Settings.
+    @Published var timeDescriptionRequired: Bool = false
     @Published var recurring: [RecurringEntry] = []
     @Published var dynamicMeetings: [DynamicMeeting] = []
     @Published var daysOff: [String] = []
@@ -53,6 +56,7 @@ final class Settings: ObservableObject {
         meetingsTaskId = j["meetingsTaskId"] as? Int ?? 0
         meetingMinMinutes = j["meetingMinMinutes"] as? Int ?? 30
         meetingStepMinutes = j["meetingStepMinutes"] as? Int ?? 15
+        timeDescriptionRequired = j["timeDescriptionRequired"] as? Bool ?? false
         weeklyOff = j["weeklyOff"] as? [Int] ?? [0, 6]
         daysOff = j["daysOff"] as? [String] ?? []
         region = j["region"] as? String ?? "none"
@@ -93,6 +97,7 @@ final class Settings: ObservableObject {
             "myUserEmail": myUserEmail, "timezone": timezone,
             "dailyTaskId": dailyTaskId, "meetingsTaskId": meetingsTaskId,
             "meetingMinMinutes": meetingMinMinutes, "meetingStepMinutes": meetingStepMinutes,
+            "timeDescriptionRequired": timeDescriptionRequired,
             "weeklyOff": weeklyOff, "daysOff": daysOff, "region": region,
             "agentClaudePath": agentClaudePath, "agentModel": agentModel,
             "agentExtraTools": agentExtraTools, "agentInstructions": agentInstructions,

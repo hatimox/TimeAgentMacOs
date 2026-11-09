@@ -1,38 +1,71 @@
 import Foundation
 
-/// Today / week / month totals from the cached time entries, bucketed by the
-/// offset-aware day strings (same approach as the Electron app).
+/// Day / week / month totals from the cached time entries, bucketed by the
+/// offset-aware day strings (same approach as the Electron app). Each period
+/// can be shifted into the past independently (0 = current, -1 = previous…).
 enum Totals {
-    static func compute(_ times: [TimeEntry], offsetMinutes: Int, monthOffset: Int = 0)
-        -> (today: Double, week: Double, month: Double, monthLabel: String) {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(secondsFromGMT: offsetMinutes * 60) ?? .current
+    struct Result {
+        var day: Double, week: Double, month: Double
+        var dayLabel: String, weekLabel: String, monthLabel: String
+    }
+
+    static func compute(_ times: [TimeEntry], offsetMinutes: Int,
+                        dayOffset: Int = 0, weekOffset: Int = 0, monthOffset: Int = 0) -> Result {
+        let cal = calendar(offsetMinutes)
         let now = Date()
-        let todayStr = dayString(now, cal)
-        // Monday-start week.
+
+        let dayDate = cal.date(byAdding: .day, value: dayOffset, to: now)!
+        let dayStr = dayString(dayDate, cal)
+
+        // Monday-start week, shifted by whole weeks.
         let weekday = cal.component(.weekday, from: now)   // 1=Sun…7=Sat
-        let backToMon = (weekday + 5) % 7
-        let weekStart = cal.date(byAdding: .day, value: -backToMon, to: now)!
-        let weekStartStr = dayString(weekStart, cal)
+        let thisMonday = cal.date(byAdding: .day, value: -((weekday + 5) % 7), to: now)!
+        let weekStart = cal.date(byAdding: .day, value: 7 * weekOffset, to: thisMonday)!
+        let weekEnd = cal.date(byAdding: .day, value: 6, to: weekStart)!
+        let weekStartStr = dayString(weekStart, cal), weekEndStr = dayString(weekEnd, cal)
 
         let mbase = cal.date(byAdding: .month, value: monthOffset, to: now)!
         let mc = cal.dateComponents([.year, .month], from: mbase)
         let prefix = String(format: "%04d-%02d", mc.year ?? 0, mc.month ?? 0)
 
-        var today = 0.0, week = 0.0, month = 0.0
+        var day = 0.0, week = 0.0, month = 0.0
         for t in times {
-            if t.day == todayStr { today += t.hours }
-            if t.day >= weekStartStr { week += t.hours }
+            if t.day == dayStr { day += t.hours }
+            if t.day >= weekStartStr && t.day <= weekEndStr { week += t.hours }
             if t.day.hasPrefix(prefix) { month += t.hours }
         }
-        let f = DateFormatter(); f.dateFormat = "LLLL yyyy"; f.timeZone = cal.timeZone
-        return (today, week, month, f.string(from: mbase))
+
+        let mf = DateFormatter(); mf.dateFormat = "LLLL yyyy"; mf.timeZone = cal.timeZone
+        let df = DateFormatter(); df.dateFormat = "EEE d MMM"; df.timeZone = cal.timeZone
+        let dayLabel = dayOffset == 0 ? "Today" : dayOffset == -1 ? "Yesterday" : df.string(from: dayDate)
+        let wf = DateFormatter(); wf.dateFormat = "d MMM"; wf.timeZone = cal.timeZone
+        let weekLabel = weekOffset == 0 ? "This week" : weekOffset == -1 ? "Last week"
+            : "\(wf.string(from: weekStart)) – \(wf.string(from: weekEnd))"
+        return Result(day: day, week: week, month: month,
+                      dayLabel: dayLabel, weekLabel: weekLabel, monthLabel: mf.string(from: mbase))
     }
 
-    static func todayString(offsetMinutes: Int) -> String {
+    static func todayString(offsetMinutes: Int) -> String { dayString(offset: 0, offsetMinutes: offsetMinutes) }
+
+    /// "YYYY-MM-DD" for today shifted by `offset` days, in the configured zone.
+    static func dayString(offset: Int, offsetMinutes: Int) -> String {
+        let cal = calendar(offsetMinutes)
+        return dayString(cal.date(byAdding: .day, value: offset, to: Date())!, cal)
+    }
+
+    /// Long label for a day offset, e.g. "Today", "Yesterday", "Friday 6 November 2026".
+    static func longDayLabel(offset: Int, offsetMinutes: Int) -> String {
+        if offset == 0 { return "Today" }
+        if offset == -1 { return "Yesterday" }
+        let cal = calendar(offsetMinutes)
+        let f = DateFormatter(); f.dateFormat = "EEEE d MMMM yyyy"; f.timeZone = cal.timeZone
+        return f.string(from: cal.date(byAdding: .day, value: offset, to: Date())!)
+    }
+
+    private static func calendar(_ offsetMinutes: Int) -> Calendar {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: offsetMinutes * 60) ?? .current
-        return dayString(Date(), cal)
+        return cal
     }
 
     private static func dayString(_ d: Date, _ cal: Calendar) -> String {

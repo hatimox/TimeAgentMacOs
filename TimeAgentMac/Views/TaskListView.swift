@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// The main window: searchable/filterable task & bug list with per-item state
+/// The main window: searchable/filterable story, task & bug list, a sprint
+/// summary strip, with per-item state
 /// change, collapsible parent-US grouping, hours total, and direct time logging.
 enum TaskSort: String, CaseIterable, Identifiable {
     case name = "Name A–Z"
     case idDesc = "Newest (#id ↓)"
     case idAsc = "Oldest (#id ↑)"
-    case type = "Type (Bug/Task)"
+    case type = "Type (Bug/Task/US)"
     case state = "State"
     case sprint = "Sprint"
     case hours = "My hours ↓"
@@ -21,8 +22,11 @@ struct TaskListView: View {
     @State private var search = ""
     @State private var activeOnly = true
     @State private var stateFilter = "All"
+    @State private var typeFilter = "All"
     @State private var sprintFilter = kSprintCurrent
     @State private var sortBy: TaskSort = .name
+    @State private var dayOffset = 0
+    @State private var weekOffset = 0
     @State private var monthOffset = 0
     /// Expanded US group ids, persisted as a comma list; groups start collapsed.
     @AppStorage("expandedUS") private var expandedRaw = ""
@@ -30,6 +34,7 @@ struct TaskListView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            sprintSummary
             Divider()
             content
             Divider()
@@ -83,6 +88,12 @@ struct TaskListView: View {
                     if store.scopeAll != wantAll { store.scopeAll = wantAll; Task { await store.refresh() } }
                 }
 
+                filterPicker("Type", systemImage: "square.stack", selection: $typeFilter) {
+                    Text("All types").tag("All")
+                    Divider()
+                    ForEach(["User Story", "Task", "Bug"], id: \.self) { Text($0).tag($0) }
+                }
+
                 filterPicker("Status", systemImage: "circle.fill", selection: $stateFilter) {
                     Text("All statuses").tag("All")
                     Divider()
@@ -107,7 +118,7 @@ struct TaskListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.callout)
-            TextField("Search tasks & bugs (name or #id)…", text: $search).textFieldStyle(.plain)
+            TextField("Search stories, tasks & bugs (name or #id)…", text: $search).textFieldStyle(.plain)
             if !search.isEmpty {
                 Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
@@ -150,6 +161,48 @@ struct TaskListView: View {
         }
     }
 
+    // MARK: sprint summary
+
+    /// Open/done counts per type and my hours for the selected sprint scope
+    /// (ignores the search, type, status and Active filters).
+    private var sprintSummary: some View {
+        let scoped = store.items.filter(inSprint)
+        let title: String = {
+            switch sprintFilter {
+            case kSprintCurrent: return "Current sprint"
+            case "All": return "All sprints"
+            case kSprintNone: return "No sprint"
+            default: return sprintFilter
+            }
+        }()
+        let hours = scoped.reduce(0) { $0 + store.hours(for: $1.id) }
+        return HStack(spacing: 10) {
+            Label(title, systemImage: "flag.fill").font(.callout.weight(.semibold))
+            summaryChip("User Stories", scoped.filter(\.isStory), .purple)
+            summaryChip("Tasks", scoped.filter { !$0.isStory && !$0.isBug }, .blue)
+            summaryChip("Bugs", scoped.filter(\.isBug), .red)
+            Spacer()
+            Label("\(store.fmt(hours)) logged", systemImage: "clock")
+                .font(.caption.monospacedDigit()).foregroundStyle(.green)
+                .help("All time you logged on these items")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(.quaternary.opacity(0.35))
+    }
+
+    private func summaryChip(_ label: String, _ items: [WorkItem], _ color: Color) -> some View {
+        let done = items.filter(\.isFinal).count
+        return HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(label).font(.caption.weight(.medium))
+            Text("\(items.count - done) open").font(.caption.monospacedDigit())
+            Text("· \(done) done").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(color.opacity(0.1), in: Capsule())
+        .help("\(items.count) \(label.lowercased()) assigned to you")
+    }
+
     // MARK: US grouping
 
     private struct USGroup: Identifiable {
@@ -171,7 +224,8 @@ struct TaskListView: View {
             buckets[it.usId, default: []].append(it)
         }
         let gs = order.map { id -> USGroup in
-            let items = buckets[id]!
+            let all = buckets[id]!
+            let items = all.filter(\.isStory) + all.filter { !$0.isStory }   // story row leads its group
             return USGroup(id: id, name: id == 0 ? "No User Story" : items[0].usName,
                            items: items, hours: items.reduce(0) { $0 + store.hours(for: $1.id) })
         }
@@ -230,24 +284,30 @@ struct TaskListView: View {
     // MARK: footer — status + tracked-time totals
 
     private var statusBar: some View {
-        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes, monthOffset: monthOffset)
+        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes,
+                               dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
         return HStack(spacing: 12) {
             if store.loading { ProgressView().controlSize(.small) }
             Text(store.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
             Text("\(filtered.count) shown").font(.caption).foregroundStyle(.tertiary)
             Divider().frame(height: 22)
-            stat("Today", t.today)
-            stat("Week", t.week)
-            HStack(spacing: 4) {
-                Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.borderless)
-                stat(t.monthLabel, t.month)
-                Button { if monthOffset < 0 { monthOffset += 1 } } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(.borderless).disabled(monthOffset >= 0)
-            }
+            steppedStat(t.dayLabel, t.day, $dayOffset)
+            steppedStat(t.weekLabel, t.week, $weekOffset)
+            steppedStat(t.monthLabel, t.month, $monthOffset)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    /// A footer total with ‹ › to step its period back (never past the current one).
+    private func steppedStat(_ label: String, _ v: Double, _ offset: Binding<Int>) -> some View {
+        HStack(spacing: 4) {
+            Button { offset.wrappedValue -= 1 } label: { Image(systemName: "chevron.left") }
+                .buttonStyle(.borderless)
+            stat(label, v)
+            Button { if offset.wrappedValue < 0 { offset.wrappedValue += 1 } } label: { Image(systemName: "chevron.right") }
+                .buttonStyle(.borderless).disabled(offset.wrappedValue >= 0)
+        }
     }
 
     private func stat(_ label: String, _ v: Double) -> some View {
@@ -264,15 +324,20 @@ struct TaskListView: View {
         let list = store.items.filter { it in
             if activeOnly && it.isFinal { return false }
             if stateFilter != "All" && it.stateName != stateFilter { return false }
-            switch sprintFilter {
-            case kSprintNone: if !it.sprint.isEmpty { return false }
-            case kSprintCurrent, "All": break          // current = server-scoped; All = no predicate
-            default: if it.sprint != sprintFilter { return false }
-            }
+            if typeFilter != "All" && it.displayType != typeFilter { return false }
+            if !inSprint(it) { return false }
             if !q.isEmpty && !(it.name.lowercased().contains(q) || String(it.id).contains(q)) { return false }
             return true
         }
         return sorted(list)
+    }
+
+    private func inSprint(_ it: WorkItem) -> Bool {
+        switch sprintFilter {
+        case kSprintNone: return it.sprint.isEmpty
+        case kSprintCurrent, "All": return true     // current = server-scoped; All = no predicate
+        default: return it.sprint == sprintFilter
+        }
     }
 
     private func sorted(_ list: [WorkItem]) -> [WorkItem] {
@@ -312,19 +377,25 @@ struct ItemRow: View {
     @State private var hrs = ""
     @State private var note = ""
     @State private var date = Date()
+    @State private var logError: String?
+    @State private var logging = false
     @State private var showSlots = false
     @State private var hovering = false
     @State private var elapsed = "00:00:00"
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var loggedHours: Double { store.hours(for: item.id) }
-    private var isBug: Bool { item.entityType == "Bugs" }
+    private var badgeColor: Color { item.isStory ? .purple : item.isBug ? .red : .blue }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             titleRow
             metaRow
             logRow
+            if let logError {
+                Label(logError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
             if showSlots { SlotsView(itemId: item.id) }
         }
         .padding(12)
@@ -350,11 +421,12 @@ struct ItemRow: View {
         HStack(spacing: 8) {
             Text(item.displayType.uppercased())
                 .font(.caption2.bold()).padding(.horizontal, 7).padding(.vertical, 3)
-                .background((isBug ? Color.red : Color.blue).gradient)
+                .background(badgeColor.gradient)
                 .foregroundStyle(.white).clipShape(Capsule())
             Text(item.name).fontWeight(.medium).lineLimit(1)
             Spacer()
-            agentButton
+            // A story's agent is launched from its group header.
+            if !item.isStory { agentButton }
             trackButton
             if loggedHours > 0 {
                 Button { showSlots.toggle() } label: {
@@ -426,18 +498,33 @@ struct ItemRow: View {
             TextField("hrs", text: $hrs).frame(width: 52).textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.center)
             DatePicker("", selection: $date, displayedComponents: .date).labelsHidden()
-            TextField("Add a note…", text: $note).textFieldStyle(.roundedBorder)
+            TextField(descriptionRequired ? "Description (required)" : "Add a note…", text: $note)
+                .textFieldStyle(.roundedBorder)
             Button { logNow() } label: {
-                Label("Log", systemImage: "plus.circle.fill")
-            }.buttonStyle(.borderedProminent)
+                if logging { ProgressView().controlSize(.mini) }
+                else { Label("Log", systemImage: "plus.circle.fill") }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(logging || (descriptionRequired && note.trimmingCharacters(in: .whitespaces).isEmpty))
+            .help(descriptionRequired ? "TargetProcess requires a description" : "Log time")
         }.controlSize(.small)
     }
 
+    private var descriptionRequired: Bool { store.settings.timeDescriptionRequired }
+
+    /// Fields are cleared only once TP accepts the entry; on failure they stay
+    /// filled and the error shows under the row.
     private func logNow() {
         guard let h = Double(hrs.replacingOccurrences(of: ",", with: ".")), h > 0 else {
-            store.status = "Enter hours > 0"; return
+            logError = "Enter hours greater than 0."; return
         }
-        Task { await store.logTime(entityId: item.id, hours: h, description: note, date: date); hrs = ""; note = "" }
+        logging = true; logError = nil
+        Task {
+            let err = await store.logTime(entityId: item.id, hours: h, description: note, date: date)
+            logging = false
+            logError = err
+            if err == nil { hrs = ""; note = "" }
+        }
     }
 }
 

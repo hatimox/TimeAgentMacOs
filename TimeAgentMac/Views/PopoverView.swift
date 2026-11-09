@@ -5,6 +5,8 @@ import SwiftUI
 struct PopoverView: View {
     @EnvironmentObject var store: AppStore
     @ObservedObject var watcher: MeetingWatcher
+    @State private var dayOffset = 0
+    @State private var weekOffset = 0
     @State private var monthOffset = 0
     @State private var elapsed = ""
     @State private var tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -81,13 +83,15 @@ struct PopoverView: View {
     // MARK: totals
 
     private var totals: some View {
-        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes, monthOffset: monthOffset)
+        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes,
+                               dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
         return VStack(spacing: 8) {
             HStack(spacing: 8) {
-                Button { AppDelegate.shared?.openToday() } label: {
-                    tile("Today", t.today, "sun.max", .orange)
-                }.buttonStyle(.plain)
-                tile("Week", t.week, "calendar", .blue)
+                tile("Day", t.day, t.dayLabel, "sun.max", .orange, offset: $dayOffset) {
+                    store.viewDayOffset = dayOffset
+                    AppDelegate.shared?.openToday()
+                }
+                tile("Week", t.week, t.weekLabel, "calendar", .blue, offset: $weekOffset)
             }
             HStack {
                 stepButton("chevron.left") { monthOffset -= 1 }
@@ -105,15 +109,33 @@ struct PopoverView: View {
         }
     }
 
-    private func tile(_ label: String, _ v: Double, _ icon: String, _ color: Color) -> some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
+    /// A total card with its own ‹ › period stepper. `open`, if given, makes the
+    /// value clickable (the Day card opens the day's entry list).
+    private func tile(_ label: String, _ v: Double, _ period: String, _ icon: String, _ color: Color,
+                      offset: Binding<Int>, open: (() -> Void)? = nil) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 0) {
+                stepButton("chevron.left") { offset.wrappedValue -= 1 }
+                Spacer(minLength: 0)
                 Image(systemName: icon).font(.caption2).foregroundStyle(color)
                 Text(label.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+                Spacer(minLength: 0)
+                stepButton("chevron.right") { if offset.wrappedValue < 0 { offset.wrappedValue += 1 } }
+                    .disabled(offset.wrappedValue >= 0)
             }
-            Text(store.fmt(v)).font(.title3.monospacedDigit().bold())
+            Group {
+                if let open {
+                    Button(action: open) { Text(store.fmt(v)) }.buttonStyle(.plain)
+                        .help("Show this day's entries")
+                } else {
+                    Text(store.fmt(v))
+                }
+            }
+            .font(.title3.monospacedDigit().bold())
+            Text(period).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(maxWidth: .infinity).padding(.vertical, 12)
+        .frame(maxWidth: .infinity).padding(.vertical, 8).padding(.horizontal, 4)
         .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(color.opacity(0.15)))
     }

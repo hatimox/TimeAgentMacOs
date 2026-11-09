@@ -3,7 +3,10 @@ import Foundation
 /// TargetProcess REST client — a faithful port of the Electron tpclient.js,
 /// including the noon-anchored writes, offset-aware day bucketing, manual
 /// query-string encoding, and skip-based pagination (TP caps `take` at 1000).
-struct TPError: Error { let message: String }
+struct TPError: Error {
+    let message: String
+    var status: Int = 0
+}
 
 final class TPClient {
     let baseURL: String
@@ -45,7 +48,10 @@ final class TPClient {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw TPError(message: "No HTTP response") }
         guard (200..<300).contains(http.statusCode) else {
-            throw TPError(message: "HTTP \(http.statusCode): \(String(data: data.prefix(200), encoding: .utf8) ?? "")")
+            // Prefer TP's own {"Message": …} over the raw body.
+            let tpMessage = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["Message"] as? String
+            let detail = tpMessage ?? String(data: data.prefix(200), encoding: .utf8) ?? ""
+            throw TPError(message: "HTTP \(http.statusCode): \(detail)", status: http.statusCode)
         }
         if data.isEmpty { return [:] }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -96,26 +102,32 @@ final class TPClient {
     func fetchAllAssigned(currentSprintOnly: Bool) async throws -> [WorkItem] {
         async let tasks = fetchCollection("Tasks", currentSprintOnly)
         async let bugs = fetchCollection("Bugs", currentSprintOnly)
-        let all = try await tasks + bugs
+        async let stories = fetchCollection("UserStories", currentSprintOnly)
+        let all = try await tasks + bugs + stories
         return all.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
     private func fetchCollection(_ collection: String, _ currentSprintOnly: Bool) async throws -> [WorkItem] {
         var whereClause = "AssignedUser.Id eq \(myUserId)"
         if currentSprintOnly { whereClause += " and (TeamIteration.IsCurrent eq 'true')" }
+        let isStory = collection == "UserStories"
+        // Stories have no parent UserStory field; asking for it fails the query.
+        let parent = isStory ? "" : ",UserStory[Id,Name]"
         let items = try await getAllItems(collection, [
             "where": whereClause,
-            "include": "[Id,Name,EntityState[Id,Name,IsFinal],Project[Name,Process[Id]],TeamIteration[Name],UserStory[Id,Name]]",
+            "include": "[Id,Name,EntityState[Id,Name,IsFinal],Project[Name,Process[Id]],TeamIteration[Name]\(parent)]",
         ])
         return items.compactMap { it in
             guard let id = it["Id"] as? Int else { return nil }
             let es = it["EntityState"] as? [String: Any] ?? [:]
             let project = it["Project"] as? [String: Any] ?? [:]
             let process = project["Process"] as? [String: Any] ?? [:]
-            let us = it["UserStory"] as? [String: Any] ?? [:]
+            let name = it["Name"] as? String ?? ""
+            // A story is its own group, so it lists alongside its tasks.
+            let us = isStory ? ["Id": id, "Name": name] : it["UserStory"] as? [String: Any] ?? [:]
             return WorkItem(
-                id: id, name: it["Name"] as? String ?? "",
-                entityType: collection, displayType: collection == "Bugs" ? "Bug" : "Task",
+                id: id, name: name,
+                entityType: collection, displayType: WorkItem.displayType(for: collection),
                 stateId: es["Id"] as? Int ?? 0, stateName: es["Name"] as? String ?? "?",
                 isFinal: es["IsFinal"] as? Bool ?? false,
                 projectName: project["Name"] as? String ?? "",

@@ -352,7 +352,7 @@ final class AgentRun: ObservableObject, Identifiable {
             await store.moveState(entityType: "UserStories", stateKey: "UserStory", id: id,
                                   processId: processId, matching: matching)
         case .item(let it):
-            await store.moveState(entityType: it.entityType, stateKey: it.entityType == "Bugs" ? "Bug" : "Task",
+            await store.moveState(entityType: it.entityType, stateKey: it.stateKey,
                                   id: it.id, processId: it.processId, matching: matching)
         }
     }
