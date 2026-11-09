@@ -83,21 +83,21 @@ struct PopoverView: View {
     // MARK: totals
 
     private var totals: some View {
-        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes,
-                               dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
+        let t = store.totals(dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
         return VStack(spacing: 8) {
             HStack(spacing: 8) {
-                tile("Day", t.day, t.dayLabel, "sun.max", .orange, offset: $dayOffset) {
+                tile("Day", t.day, t.dayTarget, t.dayLabel, "sun.max", .orange, offset: $dayOffset) {
                     store.viewDayOffset = dayOffset
                     AppDelegate.shared?.openToday()
                 }
-                tile("Week", t.week, t.weekLabel, "calendar", .blue, offset: $weekOffset)
+                tile("Week", t.week, t.weekTarget, t.weekLabel, "calendar", .blue, offset: $weekOffset)
             }
             HStack {
                 stepButton("chevron.left") { monthOffset -= 1 }
                 Spacer()
                 VStack(spacing: 1) {
-                    Text(store.fmt(t.month)).font(.title2.monospacedDigit().bold())
+                    TargetValue(value: t.month, target: t.monthTarget, offLabel: "No working days")
+                        .font(.title2.monospacedDigit().bold())
                     Text(t.monthLabel).font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -111,7 +111,7 @@ struct PopoverView: View {
 
     /// A total card with its own ‹ › period stepper. `open`, if given, makes the
     /// value clickable (the Day card opens the day's entry list).
-    private func tile(_ label: String, _ v: Double, _ period: String, _ icon: String, _ color: Color,
+    private func tile(_ label: String, _ v: Double, _ target: Double, _ period: String, _ icon: String, _ color: Color,
                       offset: Binding<Int>, open: (() -> Void)? = nil) -> some View {
         VStack(spacing: 2) {
             HStack(spacing: 0) {
@@ -126,10 +126,10 @@ struct PopoverView: View {
             }
             Group {
                 if let open {
-                    Button(action: open) { Text(store.fmt(v)) }.buttonStyle(.plain)
+                    Button(action: open) { TargetValue(value: v, target: target) }.buttonStyle(.plain)
                         .help("Show this day's entries")
                 } else {
-                    Text(store.fmt(v))
+                    TargetValue(value: v, target: target, offLabel: "Days off")
                 }
             }
             .font(.title3.monospacedDigit().bold())

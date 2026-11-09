@@ -16,6 +16,8 @@ final class Settings: ObservableObject {
     /// TargetProcess rejects time entries without a description. Learned from
     /// the first such rejection; can also be set by hand in Settings.
     @Published var timeDescriptionRequired: Bool = false
+    /// Hours expected per working day — drives the xx / yy targets on totals.
+    @Published var hoursPerDay: Double = 8
     @Published var recurring: [RecurringEntry] = []
     @Published var dynamicMeetings: [DynamicMeeting] = []
     @Published var daysOff: [String] = []
@@ -57,6 +59,7 @@ final class Settings: ObservableObject {
         meetingMinMinutes = j["meetingMinMinutes"] as? Int ?? 30
         meetingStepMinutes = j["meetingStepMinutes"] as? Int ?? 15
         timeDescriptionRequired = j["timeDescriptionRequired"] as? Bool ?? false
+        hoursPerDay = (j["hoursPerDay"] as? NSNumber)?.doubleValue ?? 8
         weeklyOff = j["weeklyOff"] as? [Int] ?? [0, 6]
         daysOff = j["daysOff"] as? [String] ?? []
         region = j["region"] as? String ?? "none"
@@ -97,7 +100,7 @@ final class Settings: ObservableObject {
             "myUserEmail": myUserEmail, "timezone": timezone,
             "dailyTaskId": dailyTaskId, "meetingsTaskId": meetingsTaskId,
             "meetingMinMinutes": meetingMinMinutes, "meetingStepMinutes": meetingStepMinutes,
-            "timeDescriptionRequired": timeDescriptionRequired,
+            "timeDescriptionRequired": timeDescriptionRequired, "hoursPerDay": hoursPerDay,
             "weeklyOff": weeklyOff, "daysOff": daysOff, "region": region,
             "agentClaudePath": agentClaudePath, "agentModel": agentModel,
             "agentExtraTools": agentExtraTools, "agentInstructions": agentInstructions,

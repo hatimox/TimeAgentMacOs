@@ -26,7 +26,8 @@ struct TodayView: View {
                     Button("Today") { store.viewDayOffset = 0 }.controlSize(.small)
                 }
                 Spacer()
-                Text(store.fmt(total)).font(.title2.monospacedDigit().bold()).foregroundStyle(.orange)
+                TargetValue(value: total, target: store.totals(dayOffset: offset).dayTarget)
+                    .font(.title2.monospacedDigit().bold()).fixedSize()
             }
             if entries.isEmpty {
                 Spacer()

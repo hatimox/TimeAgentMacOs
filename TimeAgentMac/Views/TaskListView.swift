@@ -284,35 +284,34 @@ struct TaskListView: View {
     // MARK: footer — status + tracked-time totals
 
     private var statusBar: some View {
-        let t = Totals.compute(store.times, offsetMinutes: store.settings.tzOffsetMinutes,
-                               dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
+        let t = store.totals(dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset)
         return HStack(spacing: 12) {
             if store.loading { ProgressView().controlSize(.small) }
             Text(store.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
             Text("\(filtered.count) shown").font(.caption).foregroundStyle(.tertiary)
             Divider().frame(height: 22)
-            steppedStat(t.dayLabel, t.day, $dayOffset)
-            steppedStat(t.weekLabel, t.week, $weekOffset)
-            steppedStat(t.monthLabel, t.month, $monthOffset)
+            steppedStat(t.dayLabel, t.day, t.dayTarget, $dayOffset)
+            steppedStat(t.weekLabel, t.week, t.weekTarget, $weekOffset)
+            steppedStat(t.monthLabel, t.month, t.monthTarget, $monthOffset)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
     /// A footer total with ‹ › to step its period back (never past the current one).
-    private func steppedStat(_ label: String, _ v: Double, _ offset: Binding<Int>) -> some View {
+    private func steppedStat(_ label: String, _ v: Double, _ target: Double, _ offset: Binding<Int>) -> some View {
         HStack(spacing: 4) {
             Button { offset.wrappedValue -= 1 } label: { Image(systemName: "chevron.left") }
                 .buttonStyle(.borderless)
-            stat(label, v)
+            stat(label, v, target)
             Button { if offset.wrappedValue < 0 { offset.wrappedValue += 1 } } label: { Image(systemName: "chevron.right") }
                 .buttonStyle(.borderless).disabled(offset.wrappedValue >= 0)
         }
     }
 
-    private func stat(_ label: String, _ v: Double) -> some View {
+    private func stat(_ label: String, _ v: Double, _ target: Double) -> some View {
         VStack(spacing: 0) {
-            Text(store.fmt(v)).font(.caption.monospacedDigit().bold())
+            TargetValue(value: v, target: target, offLabel: "off").font(.caption.monospacedDigit().bold())
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
     }

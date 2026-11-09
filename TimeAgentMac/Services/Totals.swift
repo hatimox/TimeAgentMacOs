@@ -7,10 +7,16 @@ enum Totals {
     struct Result {
         var day: Double, week: Double, month: Double
         var dayLabel: String, weekLabel: String, monthLabel: String
+        /// Hours expected for each full period (working days × hours per day).
+        var dayTarget = 0.0, weekTarget = 0.0, monthTarget = 0.0
     }
 
+    /// Which days count toward the target: (day "YYYY-MM-DD", weekday 0=Sun…6=Sat) → working?
+    typealias WorkingDay = (String, Int) -> Bool
+
     static func compute(_ times: [TimeEntry], offsetMinutes: Int,
-                        dayOffset: Int = 0, weekOffset: Int = 0, monthOffset: Int = 0) -> Result {
+                        dayOffset: Int = 0, weekOffset: Int = 0, monthOffset: Int = 0,
+                        hoursPerDay: Double = 0, isWorkingDay: WorkingDay = { _, _ in true }) -> Result {
         let cal = calendar(offsetMinutes)
         let now = Date()
 
@@ -27,6 +33,17 @@ enum Totals {
         let mbase = cal.date(byAdding: .month, value: monthOffset, to: now)!
         let mc = cal.dateComponents([.year, .month], from: mbase)
         let prefix = String(format: "%04d-%02d", mc.year ?? 0, mc.month ?? 0)
+        let monthStart = cal.date(from: mc)!
+        let monthDays = cal.range(of: .day, in: .month, for: monthStart)!.count
+
+        // Targets cover the whole period, past and future days alike.
+        func target(from start: Date, days: Int) -> Double {
+            (0..<days).reduce(0.0) { acc, i in
+                let d = cal.date(byAdding: .day, value: i, to: start)!
+                let wd = cal.component(.weekday, from: d) - 1        // 0=Sun…6=Sat
+                return isWorkingDay(dayString(d, cal), wd) ? acc + hoursPerDay : acc
+            }
+        }
 
         var day = 0.0, week = 0.0, month = 0.0
         for t in times {
@@ -42,7 +59,10 @@ enum Totals {
         let weekLabel = weekOffset == 0 ? "This week" : weekOffset == -1 ? "Last week"
             : "\(wf.string(from: weekStart)) – \(wf.string(from: weekEnd))"
         return Result(day: day, week: week, month: month,
-                      dayLabel: dayLabel, weekLabel: weekLabel, monthLabel: mf.string(from: mbase))
+                      dayLabel: dayLabel, weekLabel: weekLabel, monthLabel: mf.string(from: mbase),
+                      dayTarget: target(from: dayDate, days: 1),
+                      weekTarget: target(from: weekStart, days: 7),
+                      monthTarget: target(from: monthStart, days: monthDays))
     }
 
     static func todayString(offsetMinutes: Int) -> String { dayString(offset: 0, offsetMinutes: offsetMinutes) }

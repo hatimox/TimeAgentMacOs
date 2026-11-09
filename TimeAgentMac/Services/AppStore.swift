@@ -77,6 +77,21 @@ final class AppStore: ObservableObject {
         loading = false
     }
 
+    /// Totals with targets: working days (not a weekly day off, user day off or
+    /// holiday — the same list recurring logging skips) × hours per day.
+    func totals(dayOffset: Int = 0, weekOffset: Int = 0, monthOffset: Int = 0) -> Totals.Result {
+        var offByYear: [Int: Set<String>] = [:]
+        let s = settings
+        return Totals.compute(times, offsetMinutes: s.tzOffsetMinutes,
+                              dayOffset: dayOffset, weekOffset: weekOffset, monthOffset: monthOffset,
+                              hoursPerDay: max(0, s.hoursPerDay)) { day, weekday in
+            if s.weeklyOff.contains(weekday) { return false }
+            let year = Int(day.prefix(4)) ?? 0
+            if offByYear[year] == nil { offByYear[year] = RecurringLogger.allDaysOff(year: year, settings: s) }
+            return !offByYear[year]!.contains(day)
+        }
+    }
+
     func hours(for itemId: Int) -> Double { times.filter { $0.itemId == itemId }.reduce(0) { $0 + $1.hours } }
 
     // MARK: manual stopwatch (per-task Start / Stop & Log)

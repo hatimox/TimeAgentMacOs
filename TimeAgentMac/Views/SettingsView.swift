@@ -109,6 +109,12 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 groupCard("Time entries") {
+                    labeledField("Hours per working day") {
+                        TextField("8", value: $store.settings.hoursPerDay, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 120)
+                    }
+                    Text("Targets on the Day / Week / Month totals: working days × this. Weekly days off, days off and holidays don't count.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Description required", isOn: $store.settings.timeDescriptionRequired)
                     Text("Turns on automatically when TargetProcess rejects a time entry without a description.")
                         .font(.caption).foregroundStyle(.secondary)
